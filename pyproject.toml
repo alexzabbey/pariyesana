@@ -1,0 +1,17 @@
+[project]
+name = "pariyesana"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "beautifulsoup4",
+    "httpx",
+    "numpy",
+    "polars>=1.39.3",
+    "soundfile",
+]
+
+[project.optional-dependencies]
+mlx = ["mlx-audio"]
+cuda = ["nemo-toolkit[asr]>=2.2.0"]

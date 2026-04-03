@@ -1,0 +1,30 @@
+[project]
+name = "pariyesana-backend"
+version = "0.1.0"
+description = "Semantic search engine for Buddhist dharma talks"
+
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "qdrant-client>=1.13",
+    "sentence-transformers>=4.1",
+    "transformers @ git+https://github.com/huggingface/transformers@v4.56.0-Embedding-Gemma-preview",
+    "pydantic-settings>=2.8",
+    "polars>=1.24",
+    "hdbscan>=0.8.40",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pariyesana", "scripts"]
+
+[project.scripts]
+ingest = "scripts.ingest:main"
+cluster = "scripts.cluster:main"

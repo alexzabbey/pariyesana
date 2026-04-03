@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+backend/.venv
+
+# Node
+frontend/node_modules/
+frontend/.svelte-kit/
+frontend/build/
+
+# Data (large / generated files)
+transcripts/
+talks.csv
+*.mp3
+*.wav
+
+# Model caches
+.nemo/
+
+# Qdrant persistent storage
+qdrant_storage/
+
+# Environment
+.env
+.DS_Store
