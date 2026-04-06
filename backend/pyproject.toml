@@ -8,6 +8,7 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.34",
     "qdrant-client>=1.13",
+    "torch>=2.0",
     "sentence-transformers>=4.1",
     "transformers @ git+https://github.com/huggingface/transformers@v4.56.0-Embedding-Gemma-preview",
     "pydantic-settings>=2.8",
