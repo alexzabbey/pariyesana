@@ -33,5 +33,11 @@ allow-direct-references = true
 [tool.hatch.build.targets.wheel]
 packages = ["src/pariyesana", "scripts"]
 
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
 [tool.uv.sources]
 pariyesana-db = { path = "../db", editable = true }
+torch = [{ index = "pytorch-cpu" }]
