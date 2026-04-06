@@ -338,8 +338,8 @@ def load_model(device: str) -> tuple:
             device = "mlx"
 
     if device == "mlx":
-        from mlx_audio.stt.utils import load
-        model = load("mlx-community/parakeet-tdt-0.6b-v3")
+        from mlx_audio.stt.utils import load_model as mlx_load
+        model = mlx_load("mlx-community/parakeet-tdt-0.6b-v3")
         return model, "mlx"
 
     if device == "cuda":
