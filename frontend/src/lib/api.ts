@@ -1,6 +1,10 @@
 import type { SearchResponse, FiltersResponse, DashboardResponse } from './types';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API_URL = import.meta.env.VITE_API_URL || '';
+
+function apiUrl(path: string): URL {
+	return new URL(`${API_URL}${path}`, window.location.origin);
+}
 
 export async function search(params: {
 	q: string;
@@ -13,7 +17,7 @@ export async function search(params: {
 	duration_max?: number;
 	limit?: number;
 }): Promise<SearchResponse> {
-	const url = new URL(`${API_URL}/api/search`);
+	const url = apiUrl('/api/search');
 	url.searchParams.set('q', params.q);
 	if (params.teacher) url.searchParams.set('teacher', params.teacher);
 	if (params.center) url.searchParams.set('center', params.center);
@@ -34,7 +38,7 @@ export async function fetchFilters(params?: {
 	center?: string;
 	language?: string;
 }): Promise<FiltersResponse> {
-	const url = new URL(`${API_URL}/api/filters`);
+	const url = apiUrl('/api/filters');
 	if (params?.teacher) url.searchParams.set('teacher', params.teacher);
 	if (params?.center) url.searchParams.set('center', params.center);
 	if (params?.language) url.searchParams.set('language', params.language);
@@ -45,7 +49,7 @@ export async function fetchFilters(params?: {
 }
 
 export async function fetchDashboard(): Promise<DashboardResponse> {
-	const res = await fetch(`${API_URL}/api/dashboard`);
+	const res = await fetch(apiUrl('/api/dashboard').toString());
 	if (!res.ok) throw new Error(`Failed to load dashboard: ${res.status}`);
 	return res.json();
 }
