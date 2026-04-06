@@ -8,10 +8,13 @@ dependencies = [
     "beautifulsoup4",
     "httpx",
     "numpy",
-    "polars>=1.39.3",
+    "pariyesana-db",
     "soundfile",
 ]
 
 [project.optional-dependencies]
 mlx = ["mlx-audio"]
 cuda = ["nemo-toolkit[asr]>=2.2.0"]
+
+[tool.uv.sources]
+pariyesana-db = { path = "db", editable = true }

@@ -1,4 +1,16 @@
 services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: pariyesana
+      POSTGRES_PASSWORD: pariyesana
+      POSTGRES_DB: pariyesana
+    expose:
+      - "5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
   qdrant:
     image: qdrant/qdrant:latest
     expose:
@@ -8,17 +20,19 @@ services:
     restart: unless-stopped
 
   backend:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     ports:
       - "8000:8000"
     environment:
       QDRANT_URL: http://qdrant:6333
-      METADATA_CSV_PATH: /data/talks.csv
+      DATABASE_URL: postgresql+psycopg://pariyesana:pariyesana@postgres:5432/pariyesana
       TRANSCRIPTS_DIR: /data/transcripts
     volumes:
-      - ./talks.csv:/data/talks.csv:ro
       - ./transcripts:/data/transcripts:ro
     depends_on:
+      - postgres
       - qdrant
     restart: unless-stopped
 
@@ -32,4 +46,5 @@ services:
       - backend
 
 volumes:
+  postgres_data:
   qdrant_data:

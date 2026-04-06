@@ -2,7 +2,7 @@
 
 Usage:
     cd backend/
-    uv run python -m scripts.ingest --metadata ../talks.csv --transcripts ../transcripts/
+    uv run python -m scripts.ingest --transcripts ../transcripts/
 """
 
 import argparse
@@ -17,7 +17,7 @@ from pariyesana.services.search import search_service
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Ingest dharma talk transcripts into Qdrant")
-    parser.add_argument("--metadata", default=settings.metadata_csv_path, help="Path to talks.csv")
+    parser.add_argument("--database-url", default=settings.database_url, help="Postgres connection URL")
     parser.add_argument("--transcripts", default=settings.transcripts_dir, help="Path to transcripts directory")
     parser.add_argument("--embed-batch-size", type=int, default=256, help="Embedding batch size")
     parser.add_argument("--upsert-batch-size", type=int, default=100, help="Qdrant upsert batch size")
@@ -35,7 +35,7 @@ def main() -> None:
 
     logger.info("Starting ingestion")
     start = time.time()
-    run_ingestion(args.metadata, args.transcripts, args.embed_batch_size, args.upsert_batch_size, full=args.full)
+    run_ingestion(args.database_url, args.transcripts, args.embed_batch_size, args.upsert_batch_size, full=args.full)
     elapsed = time.time() - start
     logger.info("Done in %.1f seconds", elapsed)
 

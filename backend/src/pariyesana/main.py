@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Loading metadata from %s", settings.metadata_csv_path)
+    logger.info("Loading metadata from database")
     metadata_store.load()
     logger.info("Loaded %d talks", len(metadata_store.talks))
 

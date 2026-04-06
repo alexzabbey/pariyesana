@@ -3,6 +3,7 @@
 import html
 import json
 import os
+import socket
 import subprocess
 import tempfile
 import threading
@@ -11,19 +12,24 @@ from pathlib import Path
 
 import httpx
 import numpy as np
-import polars as pl
 import soundfile as sf
 from bs4 import BeautifulSoup
 
+from pariyesana_db import (
+    claim_next_talk,
+    claim_talk,
+    get_engine,
+    get_known_talk_ids,
+    get_session,
+    mark_done,
+    mark_error,
+    upsert_talks,
+)
+
 BASE_URL = "https://dharmaseed.org"
 OUTPUT_DIR = Path(__file__).parent / "transcripts"
-CSV_PATH = Path(__file__).parent / "talks.csv"
 DELAY_BETWEEN_TALKS = 10
-
-CSV_FIELDS = [
-    "talk_id", "date", "title", "teacher", "teacher_id",
-    "center", "duration", "description", "mp3_url", "language", "transcribed",
-]
+WORKER_POLL_INTERVAL = 30
 
 # Languages Parakeet can handle (European)
 EURO_LANGUAGES = {
@@ -71,7 +77,7 @@ def build_language_map(client: httpx.Client) -> dict[str, str]:
     """Build a mapping of talk_id -> language name for all non-English languages."""
     lang_map = {}
     for lang_id, lang_name in ALL_LANGUAGES.items():
-        if lang_id == 1:  # Skip English — it's the default
+        if lang_id == 1:  # Skip English -- it's the default
             continue
         print(f"LANG | Scanning {lang_name} talks (filter={lang_id})...")
         ids = scrape_language_talk_ids(client, lang_id)
@@ -143,24 +149,19 @@ def scrape_listing_page(client: httpx.Client, page: int) -> list[dict]:
         # Consume remaining rows for this talk: description (optional), center, spacer
         description = ""
         center = ""
-        # Look ahead at the next rows until we hit another talk or run out
         j = i + 1
         while j < len(rows):
             row_j = rows[j]
-            # Stop if this is the start of a new talk
             if row_j.find("a", class_="talkteacher", href=lambda h: h and h.startswith("/talks/")):
                 break
-            # Empty spacer row — end of this talk's block
             if not row_j.get_text(strip=True):
                 j += 1
                 break
-            # Description row
             desc_div = row_j.find("div", class_="talk-description")
             if desc_div:
                 description = desc_div.get_text(" ", strip=True).replace("\n", " ")
                 j += 1
                 continue
-            # Center row — look for quietlink first, then plain short text
             if not center:
                 center_link = row_j.find("a", class_="quietlink")
                 if center_link:
@@ -169,13 +170,11 @@ def scrape_listing_page(client: httpx.Client, page: int) -> list[dict]:
                     cell = row_j.find("td")
                     if cell:
                         txt = cell.get_text(strip=True).split("\n")[0].strip()
-                        # Centers are short place names, not sentences
                         if txt and len(txt) < 80 and txt != date and txt != title and " " * 3 not in txt:
                             center = txt
             j += 1
         i = j
 
-        # Only accept entries with valid data
         if talk_id and title and mp3_url:
             talks.append({
                 "talk_id": talk_id,
@@ -188,40 +187,10 @@ def scrape_listing_page(client: httpx.Client, page: int) -> list[dict]:
                 "description": description,
                 "mp3_url": mp3_url,
                 "language": "",
-                "transcribed": "",
+                "status": "pending",
             })
 
     return talks
-
-
-# --- CSV helpers ---
-
-_CSV_SCHEMA = {col: pl.Utf8 for col in CSV_FIELDS}
-
-
-def load_csv() -> pl.DataFrame:
-    if not CSV_PATH.exists() or CSV_PATH.stat().st_size == 0:
-        return pl.DataFrame(schema=_CSV_SCHEMA)
-    df = pl.read_csv(CSV_PATH, schema_overrides=_CSV_SCHEMA, truncate_ragged_lines=True)
-    # Migrate: add missing columns
-    for col in CSV_FIELDS:
-        if col not in df.columns:
-            df = df.with_columns(pl.lit("").alias(col))
-    return df.fill_null("").select(CSV_FIELDS)
-
-
-def save_csv(df: pl.DataFrame) -> None:
-    df.select(CSV_FIELDS).write_csv(CSV_PATH)
-
-
-def append_to_csv(talks: list[dict]) -> None:
-    new_df = pl.DataFrame(talks, schema=_CSV_SCHEMA)
-    if CSV_PATH.exists() and CSV_PATH.stat().st_size > 0:
-        existing = load_csv()
-        df = pl.concat([existing, new_df])
-    else:
-        df = new_df
-    save_csv(df)
 
 
 # --- Audio helpers ---
@@ -240,7 +209,6 @@ def load_audio_raw(path: str) -> tuple[np.ndarray, int]:
         data, sr = sf.read(path, dtype="float32", always_2d=True)
         return data.mean(axis=1), sr
     except Exception:
-        # Fallback: use ffmpeg to convert to wav first
         tmp_path = None
         try:
             fd, tmp_path = tempfile.mkstemp(suffix=".wav")
@@ -366,7 +334,7 @@ def transcribe_file(model, audio_path: Path, talk_id: str, backend: str = "mlx")
 # --- HTML ---
 
 def generate_chat_html(segments: list[dict], title: str, path: Path) -> None:
-    title = html.escape(title)
+    title_escaped = html.escape(title)
     messages_html = []
     for seg in segments:
         side = "audience" if seg.get("speaker") == "audience" else "speaker"
@@ -379,199 +347,134 @@ def generate_chat_html(segments: list[dict], title: str, path: Path) -> None:
             f"</div>"
         )
 
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{title}</title>
-<style>
-  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #1a1a2e; color: #e0e0e0; padding: 20px; }}
-  h1 {{ text-align: center; margin-bottom: 24px; font-size: 1.1rem; color: #8888aa; font-weight: 400; }}
-  .chat {{ max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 8px; }}
-  .msg {{ display: flex; align-items: flex-start; gap: 8px; max-width: 85%; }}
-  .msg.speaker {{ align-self: flex-start; }}
-  .msg.audience {{ align-self: flex-end; flex-direction: row-reverse; }}
-  .bubble {{ padding: 10px 14px; border-radius: 16px; line-height: 1.5; font-size: 0.95rem; }}
-  .speaker .bubble {{ background: #16213e; color: #e0e0e0; border-bottom-left-radius: 4px; }}
-  .audience .bubble {{ background: #0f3460; color: #c8d8e8; border-bottom-right-radius: 4px; }}
-  .time {{ font-size: 0.7rem; color: #555; min-width: 36px; padding-top: 6px; flex-shrink: 0; }}
-  .msg.audience .time {{ text-align: right; }}
-  .legend {{ text-align: center; margin-bottom: 16px; font-size: 0.8rem; color: #666; }}
-  .legend span {{ display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }}
-  .legend .dot-speaker {{ background: #16213e; }}
-  .legend .dot-audience {{ background: #0f3460; }}
-</style>
-</head>
-<body>
-<h1>{title}</h1>
-<div class="legend">
-  <span class="dot-speaker"></span> Speaker &nbsp;&nbsp;
-  <span class="dot-audience"></span> Audience
-</div>
-<div class="chat">
-{"".join(messages_html)}
-</div>
-</body>
-</html>"""
+    html_content = (
+        '<!DOCTYPE html>\n<html lang="en">\n<head>\n'
+        '<meta charset="UTF-8">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1.0">\n'
+        f'<title>{title_escaped}</title>\n'
+        '<style>\n'
+        '  * { margin: 0; padding: 0; box-sizing: border-box; }\n'
+        '  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #1a1a2e; color: #e0e0e0; padding: 20px; }\n'
+        '  h1 { text-align: center; margin-bottom: 24px; font-size: 1.1rem; color: #8888aa; font-weight: 400; }\n'
+        '  .chat { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 8px; }\n'
+        '  .msg { display: flex; align-items: flex-start; gap: 8px; max-width: 85%; }\n'
+        '  .msg.speaker { align-self: flex-start; }\n'
+        '  .msg.audience { align-self: flex-end; flex-direction: row-reverse; }\n'
+        '  .bubble { padding: 10px 14px; border-radius: 16px; line-height: 1.5; font-size: 0.95rem; }\n'
+        '  .speaker .bubble { background: #16213e; color: #e0e0e0; border-bottom-left-radius: 4px; }\n'
+        '  .audience .bubble { background: #0f3460; color: #c8d8e8; border-bottom-right-radius: 4px; }\n'
+        '  .time { font-size: 0.7rem; color: #555; min-width: 36px; padding-top: 6px; flex-shrink: 0; }\n'
+        '  .msg.audience .time { text-align: right; }\n'
+        '  .legend { text-align: center; margin-bottom: 16px; font-size: 0.8rem; color: #666; }\n'
+        '  .legend span { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }\n'
+        '  .legend .dot-speaker { background: #16213e; }\n'
+        '  .legend .dot-audience { background: #0f3460; }\n'
+        '</style>\n</head>\n<body>\n'
+        f'<h1>{title_escaped}</h1>\n'
+        '<div class="legend">\n'
+        '  <span class="dot-speaker"></span> Speaker &nbsp;&nbsp;\n'
+        '  <span class="dot-audience"></span> Audience\n'
+        '</div>\n'
+        '<div class="chat">\n'
+        + "".join(messages_html) +
+        '\n</div>\n</body>\n</html>'
+    )
 
-    path.write_text(html)
+    path.write_text(html_content)
     print(f"HTML | Saved chat page: {path}")
 
 
-# --- Main loop ---
+# --- Worker ID ---
 
-def _update_csv_field(talk_id: str, field: str, value: str) -> None:
-    """Update a single field for a talk in the CSV."""
-    df = load_csv()
-    df = df.with_columns(
-        pl.when(pl.col("talk_id") == talk_id)
-        .then(pl.lit(value))
-        .otherwise(pl.col(field))
-        .alias(field)
-    )
-    save_csv(df)
+def _worker_id() -> str:
+    return f"{socket.gethostname()}-{os.getpid()}"
+
+
+# --- Main: run (scrape + transcribe, primary machine) ---
+
+def _get_pending_count(Session):
+    from sqlalchemy import select, func as sa_func
+    from pariyesana_db.models import Talk
+    with Session() as session:
+        return session.execute(
+            select(sa_func.count()).select_from(Talk).where(Talk.status == "pending")
+        ).scalar() or 0
+
+
+def _peek_next_pending(Session):
+    from sqlalchemy import select as sa_select
+    from pariyesana_db.models import Talk
+    with Session() as session:
+        return session.execute(
+            sa_select(Talk).where(Talk.status == "pending").order_by(Talk.talk_id).limit(1)
+        ).scalar_one_or_none()
 
 
 def run(device: str = "auto") -> None:
     """Scrape and transcribe talks one by one, oldest first. Resumable."""
-    # Use a separate client for language scanning to avoid session cookie contamination
+    engine = get_engine()
+    Session = get_session(engine)
+    worker_id = _worker_id()
+
     with httpx.Client(timeout=300, follow_redirects=True) as lang_client:
         lang_map = build_language_map(lang_client)
 
     client = httpx.Client(timeout=300, follow_redirects=True)
     prefetch_client = httpx.Client(timeout=300, follow_redirects=True)
 
-    df = load_csv()
-    done_count = df.filter(pl.col("transcribed") == "done").height
-    print(f"STATUS | CSV has {len(df)} talks, {done_count} done")
+    with Session() as session:
+        known_ids = get_known_talk_ids(session)
+    print(f"STATUS | DB has {len(known_ids)} talks")
 
-    # Load model once
     print(f"MODEL | Loading (device={device})...")
     model, backend = load_model(device)
     print(f"MODEL | Ready (backend={backend})")
 
-    page = 1
-    if len(df) > 0:
-        pending_mask = ~pl.col("transcribed").is_in(["done", "skip_language", "no_mp3"])
-        pending_idx = df.with_row_index().filter(pending_mask)
-        if len(pending_idx) > 0:
-            page = max(1, int(pending_idx["index"][0]) // 100 + 1)
-        else:
-            page = len(df) // 100 + 1
-
+    skip_lang_names = set(SKIP_LANGUAGES.values())
+    page = max(1, len(known_ids) // 100 + 1) if known_ids else 1
     print(f"RESUME | Starting from page {page}")
 
     while True:
-        df = load_csv()
-        pending = df.filter(~pl.col("transcribed").is_in(["done", "no_mp3", "skip_language"]))
+        pending_count = _get_pending_count(Session)
 
-        if len(pending) == 0:
+        if pending_count == 0:
             print(f"SCRAPE | Fetching page {page}...")
             new_talks = scrape_listing_page(client, page)
             if not new_talks:
-                print(f"SCRAPE | No more talks on page {page} — reached the end of dharmaseed.org")
+                print(f"SCRAPE | No more talks on page {page} -- reached the end of dharmaseed.org")
                 break
 
-            known_ids = set(load_csv()["talk_id"].to_list())
+            with Session() as session:
+                known_ids = get_known_talk_ids(session)
             fresh = [t for t in new_talks if t["talk_id"] not in known_ids]
-            skip_lang_names = set(SKIP_LANGUAGES.values())
             for t in fresh:
                 if t["talk_id"] in lang_map:
                     t["language"] = lang_map[t["talk_id"]]
                     if t["language"] in skip_lang_names:
-                        t["transcribed"] = "skip_language"
+                        t["status"] = "skip_language"
                 else:
                     t["language"] = "English"
+                if not t["mp3_url"]:
+                    t["status"] = "no_mp3"
             if fresh:
-                append_to_csv(fresh)
-                print(f"SCRAPE | Page {page}: added {len(fresh)} new talks to CSV")
+                with Session() as session:
+                    inserted = upsert_talks(session, fresh)
+                print(f"SCRAPE | Page {page}: added {inserted} new talks to DB")
             else:
                 print(f"SCRAPE | Page {page}: all {len(new_talks)} talks already known")
 
             page += 1
-            df = load_csv()
-            pending = df.filter(~pl.col("transcribed").is_in(["done", "no_mp3", "skip_language"]))
-            if len(pending) == 0:
+            if _get_pending_count(Session) == 0:
                 continue
 
-        # Skip talks with no MP3 or already-transcribed files at the front of the queue
-        row = pending.row(0, named=True)
-        talk_id = row["talk_id"]
-        title = row["title"]
-        teacher = row["teacher"]
-        mp3_url = row["mp3_url"]
-        done_count = df.filter(pl.col("transcribed") == "done").height
+        # Claim next pending talk
+        with Session() as session:
+            talk = claim_next_talk(session, worker_id)
 
-        if not mp3_url:
-            print(f"SKIP | talk_id={talk_id} | No MP3 URL | \"{title}\" by {teacher}")
-            _update_csv_field(talk_id, "transcribed", "no_mp3")
+        if talk is None:
             continue
 
-        txt_exists = (OUTPUT_DIR / f"{talk_id}.txt").exists()
-        jsonl_exists = (OUTPUT_DIR / f"{talk_id}.jsonl").exists()
-        if txt_exists and jsonl_exists:
-            print(f"RECOVER | talk_id={talk_id} | Transcript files found on disk, marking done | \"{title}\"")
-            _update_csv_field(talk_id, "transcribed", "done")
-            continue
-
-        mp3_path = Path(__file__).parent / f"{talk_id}.mp3"
-
-        # Prefetch: start downloading the next talk in a background thread
-        prefetch_thread = None
-        if len(pending) > 1:
-            next_row = pending.row(1, named=True)
-            next_id = next_row["talk_id"]
-            next_mp3_url = next_row["mp3_url"]
-            next_mp3_path = Path(__file__).parent / f"{next_id}.mp3"
-            next_already_done = (OUTPUT_DIR / f"{next_id}.txt").exists() and (OUTPUT_DIR / f"{next_id}.jsonl").exists()
-            if next_mp3_url and not next_mp3_path.exists() and not next_already_done:
-                def _prefetch(c=prefetch_client, url=next_mp3_url, dest=next_mp3_path, tid=next_id):
-                    try:
-                        download_mp3(c, url, dest)
-                        size_mb = dest.stat().st_size / 1024 / 1024
-                        print(f"PREFETCH | talk_id={tid} | Complete ({size_mb:.1f} MB)")
-                    except Exception as e:
-                        print(f"PREFETCH | talk_id={tid} | Failed ({type(e).__name__}), will retry later")
-                        if dest.exists():
-                            dest.unlink()
-                prefetch_thread = threading.Thread(target=_prefetch, daemon=True)
-                prefetch_thread.start()
-
-        try:
-            if not mp3_path.exists():
-                print(f"DOWNLOAD | talk_id={talk_id} | \"{title}\" by {teacher} | Downloading...")
-                download_mp3(client, mp3_url, mp3_path)
-                size_mb = mp3_path.stat().st_size / 1024 / 1024
-                print(f"DOWNLOAD | talk_id={talk_id} | Complete ({size_mb:.1f} MB)")
-            else:
-                size_mb = mp3_path.stat().st_size / 1024 / 1024
-                print(f"RESUME | talk_id={talk_id} | MP3 on disk ({size_mb:.1f} MB), skipping download")
-
-            print(f"TRANSCRIBE | talk_id={talk_id} | \"{title}\" by {teacher} | Starting...")
-            transcribe_file(model, mp3_path, talk_id, backend)
-            print(f"TRANSCRIBE | talk_id={talk_id} | Complete")
-
-            mp3_path.unlink()
-            print(f"CLEANUP | talk_id={talk_id} | Deleted MP3")
-
-            _update_csv_field(talk_id, "transcribed", "done")
-            done_count += 1
-            print(f"DONE | talk_id={talk_id} | \"{title}\" by {teacher} | Progress: {done_count}/{len(df)}")
-
-        except Exception as e:
-            print(f"ERROR | talk_id={talk_id} | \"{title}\" by {teacher} | {type(e).__name__}: {e}")
-            if mp3_path.exists():
-                mp3_path.unlink()
-                print(f"CLEANUP | talk_id={talk_id} | Deleted MP3 (will retry)")
-            _update_csv_field(talk_id, "transcribed", "")
-
-        # Wait for prefetch to finish before next iteration
-        if prefetch_thread is not None:
-            prefetch_thread.join()
-
-        time.sleep(DELAY_BETWEEN_TALKS)
+        _process_talk(talk, model, backend, client, prefetch_client, Session)
 
     client.close()
     prefetch_client.close()
@@ -582,26 +485,156 @@ def run(device: str = "auto") -> None:
         mp3.unlink()
         print(f"CLEANUP | Deleted leftover MP3: {mp3.name}")
 
-    df = load_csv()
-    done_count = df.filter(pl.col("transcribed") == "done").height
-    print(f"RUN COMPLETE | {done_count}/{len(df)} talks transcribed")
+    print("RUN COMPLETE")
 
 
+# --- Main: work (transcribe-only, extra worker machines) ---
+
+def work(device: str = "auto") -> None:
+    """Claim and transcribe pending talks. Run on extra worker machines."""
+    engine = get_engine()
+    Session = get_session(engine)
+    worker_id = _worker_id()
+
+    print(f"WORKER | {worker_id} starting (device={device})")
+
+    print(f"MODEL | Loading (device={device})...")
+    model, backend = load_model(device)
+    print(f"MODEL | Ready (backend={backend})")
+
+    client = httpx.Client(timeout=300, follow_redirects=True)
+    prefetch_client = httpx.Client(timeout=300, follow_redirects=True)
+
+    while True:
+        with Session() as session:
+            talk = claim_next_talk(session, worker_id)
+
+        if talk is None:
+            print(f"WORKER | {worker_id} | No pending talks, sleeping {WORKER_POLL_INTERVAL}s...")
+            time.sleep(WORKER_POLL_INTERVAL)
+            continue
+
+        _process_talk(talk, model, backend, client, prefetch_client, Session)
+
+
+# --- Shared transcription logic ---
+
+def _process_talk(talk, model, backend, client, prefetch_client, Session) -> None:
+    """Download, transcribe, and mark done a single claimed talk."""
+    talk_id = str(talk.talk_id)
+    title = talk.title
+    teacher = talk.teacher
+    mp3_url = talk.mp3_url
+
+    if not mp3_url:
+        with Session() as session:
+            from pariyesana_db.models import Talk as TalkModel
+            row = session.get(TalkModel, talk.talk_id)
+            if row:
+                row.status = "no_mp3"
+                row.claimed_by = None
+                row.claimed_at = None
+                session.commit()
+        print(f"SKIP | talk_id={talk_id} | No MP3 URL | \"{title}\" by {teacher}")
+        return
+
+    txt_exists = (OUTPUT_DIR / f"{talk_id}.txt").exists()
+    jsonl_exists = (OUTPUT_DIR / f"{talk_id}.jsonl").exists()
+    if txt_exists and jsonl_exists:
+        print(f"RECOVER | talk_id={talk_id} | Transcript files found on disk, marking done | \"{title}\"")
+        with Session() as session:
+            mark_done(session, talk.talk_id)
+        return
+
+    mp3_path = Path(__file__).parent / f"{talk_id}.mp3"
+
+    # Prefetch next talk
+    prefetch_thread = None
+    next_talk = _peek_next_pending(Session)
+    if next_talk:
+        next_id = str(next_talk.talk_id)
+        next_mp3_url = next_talk.mp3_url
+        next_mp3_path = Path(__file__).parent / f"{next_id}.mp3"
+        next_already_done = (OUTPUT_DIR / f"{next_id}.txt").exists() and (OUTPUT_DIR / f"{next_id}.jsonl").exists()
+        if next_mp3_url and not next_mp3_path.exists() and not next_already_done:
+            def _prefetch(c=prefetch_client, url=next_mp3_url, dest=next_mp3_path, tid=next_id):
+                try:
+                    download_mp3(c, url, dest)
+                    size_mb = dest.stat().st_size / 1024 / 1024
+                    print(f"PREFETCH | talk_id={tid} | Complete ({size_mb:.1f} MB)")
+                except Exception as e:
+                    print(f"PREFETCH | talk_id={tid} | Failed ({type(e).__name__}), will retry later")
+                    if dest.exists():
+                        dest.unlink()
+            prefetch_thread = threading.Thread(target=_prefetch, daemon=True)
+            prefetch_thread.start()
+
+    try:
+        if not mp3_path.exists():
+            print(f"DOWNLOAD | talk_id={talk_id} | \"{title}\" by {teacher} | Downloading...")
+            download_mp3(client, mp3_url, mp3_path)
+            size_mb = mp3_path.stat().st_size / 1024 / 1024
+            print(f"DOWNLOAD | talk_id={talk_id} | Complete ({size_mb:.1f} MB)")
+        else:
+            size_mb = mp3_path.stat().st_size / 1024 / 1024
+            print(f"RESUME | talk_id={talk_id} | MP3 on disk ({size_mb:.1f} MB), skipping download")
+
+        print(f"TRANSCRIBE | talk_id={talk_id} | \"{title}\" by {teacher} | Starting...")
+        transcribe_file(model, mp3_path, talk_id, backend)
+        print(f"TRANSCRIBE | talk_id={talk_id} | Complete")
+
+        mp3_path.unlink()
+        print(f"CLEANUP | talk_id={talk_id} | Deleted MP3")
+
+        with Session() as session:
+            mark_done(session, talk.talk_id)
+        print(f"DONE | talk_id={talk_id} | \"{title}\" by {teacher}")
+
+    except Exception as e:
+        print(f"ERROR | talk_id={talk_id} | \"{title}\" by {teacher} | {type(e).__name__}: {e}")
+        if mp3_path.exists():
+            mp3_path.unlink()
+            print(f"CLEANUP | talk_id={talk_id} | Deleted MP3 (will retry)")
+        with Session() as session:
+            mark_error(session, talk.talk_id)
+
+    if prefetch_thread is not None:
+        prefetch_thread.join()
+
+    time.sleep(DELAY_BETWEEN_TALKS)
+
+
+# --- CLI ---
 
 def main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(description="Dharma Seed talk scraper & transcriber")
-    parser.add_argument("--run", action="store_true", help="Scrape and transcribe talks one by one, oldest first")
-    parser.add_argument("--html", type=str, metavar="TALK_ID", help="Generate chat HTML for a specific talk ID")
-    parser.add_argument("--device", choices=["mlx", "cuda", "auto"], default="auto",
+    sub = parser.add_subparsers(dest="command")
+
+    run_p = sub.add_parser("run", help="Scrape and transcribe (primary machine)")
+    run_p.add_argument("--device", choices=["mlx", "cuda", "auto"], default="auto",
+                       help="Compute backend: mlx (Apple Silicon), cuda (NVIDIA GPU), auto (detect)")
+
+    work_p = sub.add_parser("work", help="Transcribe-only worker (extra machines)")
+    work_p.add_argument("--device", choices=["mlx", "cuda", "auto"], default="auto",
                         help="Compute backend: mlx (Apple Silicon), cuda (NVIDIA GPU), auto (detect)")
+
+    html_p = sub.add_parser("html", help="Generate chat HTML for a talk")
+    html_p.add_argument("talk_id", help="Talk ID to generate HTML for")
+
+    migrate_p = sub.add_parser("migrate", help="One-time CSV import into Postgres")
+    migrate_p.add_argument("--csv", default="talks.csv", help="Path to talks.csv")
+    migrate_p.add_argument("--transcripts", default="transcripts", help="Path to transcripts directory")
+
     args = parser.parse_args()
 
-    if args.run:
+    if args.command == "run":
         run(device=args.device)
-    elif args.html:
-        talk_id = args.html
+    elif args.command == "work":
+        work(device=args.device)
+    elif args.command == "html":
+        talk_id = args.talk_id
         jsonl_path = OUTPUT_DIR / f"{talk_id}.jsonl"
         if not jsonl_path.exists():
             print(f"ERROR | No JSONL found for talk {talk_id}")
@@ -611,12 +644,21 @@ def main() -> None:
             for line in f:
                 segments.append(json.loads(line))
         title = talk_id
-        df = load_csv()
-        match = df.filter(pl.col("talk_id") == talk_id)
-        if len(match) > 0:
-            title = match["title"][0]
+        try:
+            engine = get_engine()
+            Session = get_session(engine)
+            with Session() as session:
+                from pariyesana_db.models import Talk as TalkModel
+                row = session.get(TalkModel, int(talk_id))
+                if row:
+                    title = row.title
+        except Exception:
+            pass
         html_path = OUTPUT_DIR / f"{talk_id}.html"
         generate_chat_html(segments, title, html_path)
+    elif args.command == "migrate":
+        from pariyesana_db.migrate import migrate
+        migrate(args.csv, args.transcripts)
     else:
         parser.print_help()
 

@@ -7,8 +7,9 @@ from pathlib import Path
 from qdrant_client import models
 
 from pariyesana.config import settings
+from pariyesana_db import get_all_talks, get_engine, get_session
+
 from pariyesana.services.embedding import embedding_service
-from pariyesana.services.metadata import MetadataStore
 from pariyesana.services.search import search_service
 
 logger = logging.getLogger(__name__)
@@ -117,7 +118,7 @@ def _read_and_chunk_talk(talk_id: int, jsonl_path: Path) -> list[dict]:
 
 
 def run_ingestion(
-    csv_path: str,
+    database_url: str,
     transcripts_dir: str,
     embed_batch_size: int = 256,
     upsert_batch_size: int = 100,
@@ -126,14 +127,16 @@ def run_ingestion(
     """Run ingestion pipeline. By default only indexes new talks (incremental)."""
     assert search_service.client is not None
 
-    store = MetadataStore()
-    store.load(csv_path)
+    engine = get_engine(database_url)
+    Session = get_session(engine)
+    with Session() as session:
+        all_talks = get_all_talks(session)
 
     transcripts = Path(transcripts_dir)
     transcribed = {
-        tid: t for tid, t in store.talks.items() if t.transcribed == "done"
+        t.talk_id: t for t in all_talks if t.status == "done"
     }
-    logger.info("Found %d transcribed talks in CSV", len(transcribed))
+    logger.info("Found %d transcribed talks in DB", len(transcribed))
 
     if not full:
         existing_ids = search_service.get_indexed_talk_ids()
@@ -157,11 +160,11 @@ def run_ingestion(
             continue
 
         meta_by_id[talk_id] = {
-            "teacher": talk.teacher,
-            "title": talk.title,
-            "date": talk.date,
-            "center": talk.center,
-            "language": talk.language,
+            "teacher": talk.teacher or "",
+            "title": talk.title or "",
+            "date": talk.date or "",
+            "center": talk.center or "",
+            "language": talk.language or "English",
         }
         all_chunks.extend(_read_and_chunk_talk(talk_id, jsonl_path))
 

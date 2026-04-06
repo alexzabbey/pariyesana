@@ -11,7 +11,7 @@ dependencies = [
     "sentence-transformers>=4.1",
     "transformers @ git+https://github.com/huggingface/transformers@v4.56.0-Embedding-Gemma-preview",
     "pydantic-settings>=2.8",
-    "polars>=1.24",
+    "pariyesana-db",
     "hdbscan>=0.8.40",
 ]
 
@@ -24,6 +24,9 @@ allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pariyesana", "scripts"]
+
+[tool.uv.sources]
+pariyesana-db = { path = "../db", editable = true }
 
 [project.scripts]
 ingest = "scripts.ingest:main"

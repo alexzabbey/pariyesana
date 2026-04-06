@@ -1,4 +1,4 @@
-import polars as pl
+from pariyesana_db import get_all_talks, get_engine, get_session
 
 from pariyesana.config import settings
 from pariyesana.models.schemas import (
@@ -27,29 +27,32 @@ class MetadataStore:
     def __init__(self) -> None:
         self.talks: dict[int, TalkMetadata] = {}
 
-    def load(self, csv_path: str | None = None) -> None:
-        path = csv_path or settings.metadata_csv_path
-        df = pl.read_csv(path, schema_overrides={"talk_id": pl.Utf8, "teacher_id": pl.Utf8})
-        for row in df.iter_rows(named=True):
-            talk_id = int(row["talk_id"])
-            teacher_id = int(row["teacher_id"]) if row.get("teacher_id") else 0
-            duration = row.get("duration", "") or ""
-            mp3_url = row.get("mp3_url", "") or ""
+    def load(self) -> None:
+        engine = get_engine(settings.database_url)
+        Session = get_session(engine)
+        with Session() as session:
+            rows = get_all_talks(session)
+
+        for row in rows:
+            talk_id = row.talk_id
+            teacher_id = int(row.teacher_id) if row.teacher_id and row.teacher_id.isdigit() else 0
+            duration = row.duration or ""
+            mp3_url = row.mp3_url or ""
             self.talks[talk_id] = TalkMetadata(
                 talk_id=talk_id,
-                date=row.get("date", "") or "",
-                title=row.get("title", "") or "",
-                teacher=row.get("teacher", "") or "",
+                date=row.date or "",
+                title=row.title or "",
+                teacher=row.teacher or "",
                 teacher_id=teacher_id,
-                center=row.get("center", "") or "",
+                center=row.center or "",
                 duration=duration,
                 duration_secs=_parse_duration(duration),
-                description=row.get("description", "") or "",
+                description=row.description or "",
                 mp3_url=mp3_url,
                 audio_url=f"{DHARMASEED_BASE}{mp3_url}" if mp3_url else "",
                 dharmaseed_url=f"{DHARMASEED_BASE}/talks/{talk_id}/",
-                language=row.get("language", "") or "English",
-                transcribed=row.get("transcribed", "") or "",
+                language=row.language or "English",
+                transcribed=row.status or "",
             )
 
     def get_talk(self, talk_id: int) -> TalkMetadata | None:

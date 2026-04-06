@@ -3,9 +3,15 @@ FROM python:3.12-slim
 RUN pip install uv
 
 WORKDIR /app
-COPY pyproject.toml .
-COPY src/ src/
-COPY scripts/ scripts/
+
+# Install shared db package first
+COPY db/ /tmp/db/
+RUN uv pip install --system /tmp/db/
+
+# Install backend
+COPY backend/pyproject.toml .
+COPY backend/src/ src/
+COPY backend/scripts/ scripts/
 
 RUN uv pip install --system .
 
