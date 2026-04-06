@@ -5,8 +5,8 @@ services:
       POSTGRES_USER: pariyesana
       POSTGRES_PASSWORD: ${PG_PASSWORD}
       POSTGRES_DB: pariyesana
-    expose:
-      - "5432"
+    ports:
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
@@ -42,6 +42,7 @@ services:
     ports:
       - "3000:3000"
     environment:
+      HOST: "0.0.0.0"
       VITE_API_URL: http://localhost:8000
     depends_on:
       - backend
