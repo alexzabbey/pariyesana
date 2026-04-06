@@ -30,6 +30,7 @@ services:
       TRANSCRIPTS_DIR: /data/transcripts
     volumes:
       - ./transcripts:/data/transcripts:ro
+      - hf_cache:/root/.cache/huggingface
     depends_on:
       - postgres
       - qdrant
@@ -58,3 +59,4 @@ volumes:
   caddy_config:
   postgres_data:
   qdrant_data:
+  hf_cache:
