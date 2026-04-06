@@ -17,11 +17,10 @@ COPY db/ /app/db/
 
 # Copy dependency files first (cached layer)
 COPY backend/pyproject.toml pyproject.toml
-COPY backend/uv.lock uv.lock
 
-# Install deps only
+# Install deps only (generate lock on the fly since uv.lock is environment-specific)
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-install-project --no-dev --no-editable
+    uv sync --no-install-project --no-dev --no-editable
 
 # Copy source
 COPY backend/src/ src/
@@ -29,6 +28,6 @@ COPY backend/scripts/ scripts/
 
 # Install project itself
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-editable
+    uv sync --no-dev --no-editable
 
 CMD ["uv", "run", "uvicorn", "pariyesana.main:app", "--host", "0.0.0.0", "--port", "8000"]
