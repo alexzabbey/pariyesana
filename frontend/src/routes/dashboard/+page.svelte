@@ -227,7 +227,7 @@
         animation: fade-up 0.4s ease forwards;
     }
 
-    .card-item {
+    :global(.card-item) {
         opacity: 0;
         transform: translateY(6px);
         animation: fade-up 0.35s ease forwards;
