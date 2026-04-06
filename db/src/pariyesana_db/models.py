@@ -8,6 +8,19 @@ class Base(DeclarativeBase):
     pass
 
 
+class Worker(Base):
+    __tablename__ = "workers"
+
+    worker_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    status: Mapped[str] = mapped_column(String(20), default="idle")  # idle | processing
+    current_talk_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_heartbeat: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    talks_completed: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class Talk(Base):
     __tablename__ = "talks"
 

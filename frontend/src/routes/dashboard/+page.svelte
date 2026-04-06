@@ -59,6 +59,17 @@
         const hrs = Math.floor(mins / 60);
         return `${hrs}h ${mins % 60}m ago`;
     }
+
+    function uptime(iso: string): string {
+        const diff = Date.now() - new Date(iso).getTime();
+        const mins = Math.floor(diff / 60000);
+        if (mins < 60) return `${mins}m`;
+        const hrs = Math.floor(mins / 60);
+        const rem = mins % 60;
+        if (hrs < 24) return rem > 0 ? `${hrs}h ${rem}m` : `${hrs}h`;
+        const days = Math.floor(hrs / 24);
+        return `${days}d ${hrs % 24}h`;
+    }
 </script>
 
 <svelte:head>
@@ -163,22 +174,30 @@
                         <Card.Root class="card-item" style="animation-delay: {i * 60 + 240}ms">
                             <Card.Content class="flex items-center gap-3 p-4">
                                 <span class="relative flex h-2.5 w-2.5 shrink-0">
-                                    <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-60"></span>
-                                    <span class="relative inline-flex h-2.5 w-2.5 rounded-full bg-primary"></span>
+                                    {#if worker.status === "processing"}
+                                        <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-60"></span>
+                                        <span class="relative inline-flex h-2.5 w-2.5 rounded-full bg-primary"></span>
+                                    {:else}
+                                        <span class="relative inline-flex h-2.5 w-2.5 rounded-full bg-muted-foreground"></span>
+                                    {/if}
                                 </span>
                                 <div class="min-w-0 flex-1">
                                     <div class="truncate text-sm font-medium text-foreground">
                                         {worker.worker_id}
                                     </div>
                                     <div class="flex items-center gap-1.5 text-xs text-muted-foreground">
-                                        <span>{worker.active_jobs} job{worker.active_jobs !== 1 ? "s" : ""}</span>
-                                        {#if worker.claimed_since}
+                                        {#if worker.status === "processing" && worker.current_talk_id}
+                                            <span>talk #{worker.current_talk_id}</span>
                                             <span class="text-border">&middot;</span>
-                                            <span>{timeAgo(worker.claimed_since)}</span>
                                         {/if}
+                                        <span>{worker.talks_completed} done</span>
+                                        <span class="text-border">&middot;</span>
+                                        <span>up {uptime(worker.started_at)}</span>
                                     </div>
                                 </div>
-                                <Badge variant="outline" class="shrink-0">active</Badge>
+                                <Badge variant={worker.status === "processing" ? "default" : "outline"} class="shrink-0">
+                                    {worker.status === "processing" ? "processing" : "idle"}
+                                </Badge>
                             </Card.Content>
                         </Card.Root>
                     {/each}

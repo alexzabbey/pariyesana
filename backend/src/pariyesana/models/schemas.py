@@ -75,8 +75,11 @@ class HealthResponse(BaseModel):
 
 class WorkerInfo(BaseModel):
     worker_id: str
-    active_jobs: int
-    claimed_since: str | None
+    status: str
+    current_talk_id: int | None
+    last_heartbeat: str
+    started_at: str
+    talks_completed: int
 
 
 class DashboardResponse(BaseModel):

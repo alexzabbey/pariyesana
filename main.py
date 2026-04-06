@@ -16,6 +16,7 @@ import soundfile as sf
 from bs4 import BeautifulSoup
 
 from pariyesana_db import (
+    Base,
     claim_next_talk,
     claim_talk,
     get_engine,
@@ -24,6 +25,7 @@ from pariyesana_db import (
     mark_done,
     mark_error,
     upsert_talks,
+    worker_heartbeat,
 )
 
 BASE_URL = "https://dharmaseed.org"
@@ -100,8 +102,16 @@ def scrape_language_talk_ids(client: httpx.Client, language_filter: int) -> set[
 ALL_LANGUAGES = {**EURO_LANGUAGES, **SKIP_LANGUAGES}
 
 
+LANGUAGE_MAP_PATH = Path(__file__).parent / "language_map.json"
+
+
 def build_language_map(client: httpx.Client) -> dict[str, str]:
-    """Build a mapping of talk_id -> language name for all non-English languages."""
+    """Load cached language map or scrape and cache it."""
+    if LANGUAGE_MAP_PATH.exists():
+        lang_map = json.loads(LANGUAGE_MAP_PATH.read_text())
+        print(f"LANG | Loaded {len(lang_map)} entries from {LANGUAGE_MAP_PATH.name}")
+        return lang_map
+
     lang_map = {}
     for lang_id, lang_name in ALL_LANGUAGES.items():
         if lang_id == 1:  # Skip English -- it's the default
@@ -113,6 +123,9 @@ def build_language_map(client: httpx.Client) -> dict[str, str]:
         if ids:
             print(f"LANG | Found {len(ids)} {lang_name} talks")
         time.sleep(DELAY_BETWEEN_PAGES)
+
+    LANGUAGE_MAP_PATH.write_text(json.dumps(lang_map))
+    print(f"LANG | Saved {len(lang_map)} entries to {LANGUAGE_MAP_PATH.name}")
     return lang_map
 
 
@@ -479,8 +492,12 @@ def _peek_next_pending(Session):
 def run(device: str = "auto") -> None:
     """Scrape and transcribe talks one by one, oldest first. Resumable."""
     engine = get_engine()
+    Base.metadata.create_all(engine)
     Session = get_session(engine)
     worker_id = _worker_id()
+
+    with Session() as session:
+        worker_heartbeat(session, worker_id, status="idle")
 
     with httpx.Client(timeout=300, follow_redirects=True) as lang_client:
         lang_map = build_language_map(lang_client)
@@ -541,7 +558,9 @@ def run(device: str = "auto") -> None:
         if talk is None:
             continue
 
-        _process_talk(talk, model, backend, client, prefetch_client, Session)
+        with Session() as session:
+            worker_heartbeat(session, worker_id, status="processing", current_talk_id=talk.talk_id)
+        _process_talk(talk, model, backend, client, prefetch_client, Session, worker_id)
 
     client.close()
     prefetch_client.close()
@@ -560,10 +579,14 @@ def run(device: str = "auto") -> None:
 def work(device: str = "auto") -> None:
     """Claim and transcribe pending talks. Run on extra worker machines."""
     engine = get_engine()
+    Base.metadata.create_all(engine)
     Session = get_session(engine)
     worker_id = _worker_id()
 
     print(f"WORKER | {worker_id} starting (device={device})")
+
+    with Session() as session:
+        worker_heartbeat(session, worker_id, status="idle")
 
     print(f"MODEL | Loading (device={device})...")
     model, backend = load_model(device)
@@ -578,15 +601,19 @@ def work(device: str = "auto") -> None:
 
         if talk is None:
             print(f"WORKER | {worker_id} | No pending talks, sleeping {WORKER_POLL_INTERVAL}s...")
+            with Session() as session:
+                worker_heartbeat(session, worker_id, status="idle")
             time.sleep(WORKER_POLL_INTERVAL)
             continue
 
-        _process_talk(talk, model, backend, client, prefetch_client, Session)
+        with Session() as session:
+            worker_heartbeat(session, worker_id, status="processing", current_talk_id=talk.talk_id)
+        _process_talk(talk, model, backend, client, prefetch_client, Session, worker_id)
 
 
 # --- Shared transcription logic ---
 
-def _process_talk(talk, model, backend, client, prefetch_client, Session) -> None:
+def _process_talk(talk, model, backend, client, prefetch_client, Session, worker_id: str | None = None) -> None:
     """Download, transcribe, and mark done a single claimed talk."""
     talk_id = str(talk.talk_id)
     title = talk.title
@@ -602,6 +629,9 @@ def _process_talk(talk, model, backend, client, prefetch_client, Session) -> Non
                 row.claimed_by = None
                 row.claimed_at = None
                 session.commit()
+        wid = worker_id or talk.claimed_by or "unknown"
+        with Session() as session:
+            worker_heartbeat(session, wid, status="idle")
         print(f"SKIP | talk_id={talk_id} | No MP3 URL | \"{title}\" by {teacher}")
         return
 
@@ -611,6 +641,9 @@ def _process_talk(talk, model, backend, client, prefetch_client, Session) -> Non
         print(f"RECOVER | talk_id={talk_id} | Transcript files found on disk, marking done | \"{title}\"")
         with Session() as session:
             mark_done(session, talk.talk_id)
+        wid = worker_id or talk.claimed_by or "unknown"
+        with Session() as session:
+            worker_heartbeat(session, wid, status="idle", inc_completed=True)
         return
 
     mp3_path = Path(__file__).parent / f"{talk_id}.mp3"
@@ -655,6 +688,9 @@ def _process_talk(talk, model, backend, client, prefetch_client, Session) -> Non
 
         with Session() as session:
             mark_done(session, talk.talk_id)
+        wid = worker_id or talk.claimed_by or "unknown"
+        with Session() as session:
+            worker_heartbeat(session, wid, status="idle", inc_completed=True)
         print(f"DONE | talk_id={talk_id} | \"{title}\" by {teacher}")
 
     except Exception as e:
@@ -664,6 +700,9 @@ def _process_talk(talk, model, backend, client, prefetch_client, Session) -> Non
             print(f"CLEANUP | talk_id={talk_id} | Deleted MP3 (will retry)")
         with Session() as session:
             mark_error(session, talk.talk_id)
+        wid = worker_id or talk.claimed_by or "unknown"
+        with Session() as session:
+            worker_heartbeat(session, wid, status="idle")
 
     if prefetch_thread is not None:
         prefetch_thread.join()

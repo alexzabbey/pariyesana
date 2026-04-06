@@ -4,9 +4,10 @@ from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from pariyesana_db.models import Talk
+from pariyesana_db.models import Talk, Worker
 
 STALE_CLAIM_MINUTES = 60
+WORKER_TIMEOUT_MINUTES = 2
 
 
 def upsert_talks(session: Session, talks: list[dict]) -> int:
@@ -116,6 +117,35 @@ def get_known_talk_ids(session: Session) -> set[str]:
     return {str(tid) for tid in rows}
 
 
+def worker_heartbeat(
+    session: Session,
+    worker_id: str,
+    status: str = "idle",
+    current_talk_id: int | None = None,
+    inc_completed: bool = False,
+) -> None:
+    """Upsert a worker heartbeat. Call at key lifecycle points."""
+    now = datetime.now(timezone.utc)
+    stmt = pg_insert(Worker).values(
+        worker_id=worker_id,
+        status=status,
+        current_talk_id=current_talk_id,
+        last_heartbeat=now,
+        started_at=now,
+        talks_completed=1 if inc_completed else 0,
+    ).on_conflict_do_update(
+        index_elements=["worker_id"],
+        set_={
+            "status": status,
+            "current_talk_id": current_talk_id,
+            "last_heartbeat": now,
+            **({"talks_completed": Worker.talks_completed + 1} if inc_completed else {}),
+        },
+    )
+    session.execute(stmt)
+    session.commit()
+
+
 def get_dashboard_stats(session: Session) -> dict:
     """Return aggregated stats for the dashboard."""
     from sqlalchemy import func as sa_func
@@ -126,24 +156,23 @@ def get_dashboard_stats(session: Session) -> dict:
     ).all()
     status_counts = {status: count for status, count in status_rows}
 
-    # Worker stats: talks completed per worker (from done talks that still have updated_at)
-    # We track by claimed_by on currently claimed talks, and infer completed work
-    # by counting done talks grouped by their last worker
-    # Since we clear claimed_by on done, we need a different approach:
-    # count currently active claims
+    # Workers with a recent heartbeat (within WORKER_TIMEOUT_MINUTES)
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=WORKER_TIMEOUT_MINUTES)
     active_workers = session.execute(
-        select(Talk.claimed_by, sa_func.count(), sa_func.min(Talk.claimed_at))
-        .where(Talk.status == "claimed")
-        .where(Talk.claimed_by.isnot(None))
-        .group_by(Talk.claimed_by)
-    ).all()
+        select(Worker)
+        .where(Worker.last_heartbeat >= cutoff)
+        .order_by(Worker.started_at)
+    ).scalars().all()
     workers = [
         {
-            "worker_id": row[0],
-            "active_jobs": row[1],
-            "claimed_since": row[2].isoformat() if row[2] else None,
+            "worker_id": w.worker_id,
+            "status": w.status,
+            "current_talk_id": w.current_talk_id,
+            "last_heartbeat": w.last_heartbeat.isoformat(),
+            "started_at": w.started_at.isoformat(),
+            "talks_completed": w.talks_completed,
         }
-        for row in active_workers
+        for w in active_workers
     ]
 
     # Total count

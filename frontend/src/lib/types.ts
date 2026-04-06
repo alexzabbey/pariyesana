@@ -49,8 +49,11 @@ export interface FiltersResponse {
 
 export interface WorkerInfo {
 	worker_id: string;
-	active_jobs: number;
-	claimed_since: string | null;
+	status: string;
+	current_talk_id: number | null;
+	last_heartbeat: string;
+	started_at: string;
+	talks_completed: number;
 }
 
 export interface DashboardResponse {
