@@ -12,8 +12,16 @@ dependencies = [
     "transformers @ git+https://github.com/huggingface/transformers@v4.56.0-Embedding-Gemma-preview",
     "pydantic-settings>=2.8",
     "pariyesana-db",
+]
+
+[project.optional-dependencies]
+scripts = [
     "hdbscan>=0.8.40",
 ]
+
+[project.scripts]
+ingest = "scripts.ingest:main"
+cluster = "scripts.cluster:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -27,7 +35,3 @@ packages = ["src/pariyesana", "scripts"]
 
 [tool.uv.sources]
 pariyesana-db = { path = "../db", editable = true }
-
-[project.scripts]
-ingest = "scripts.ingest:main"
-cluster = "scripts.cluster:main"

@@ -833,7 +833,6 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
-    { name = "hdbscan" },
     { name = "pariyesana-db" },
     { name = "pydantic-settings" },
     { name = "qdrant-client" },
@@ -842,10 +841,15 @@ dependencies = [
     { name = "uvicorn", extra = ["standard"] },
 ]
 
+[package.optional-dependencies]
+scripts = [
+    { name = "hdbscan" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
-    { name = "hdbscan", specifier = ">=0.8.40" },
+    { name = "hdbscan", marker = "extra == 'scripts'", specifier = ">=0.8.40" },
     { name = "pariyesana-db", editable = "../db" },
     { name = "pydantic-settings", specifier = ">=2.8" },
     { name = "qdrant-client", specifier = ">=1.13" },
@@ -853,6 +857,7 @@ requires-dist = [
     { name = "transformers", git = "https://github.com/huggingface/transformers?rev=v4.56.0-Embedding-Gemma-preview" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34" },
 ]
+provides-extras = ["scripts"]
 
 [[package]]
 name = "pariyesana-db"
