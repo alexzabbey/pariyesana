@@ -1,4 +1,4 @@
-import type { SearchResponse, FiltersResponse } from './types';
+import type { SearchResponse, FiltersResponse, DashboardResponse } from './types';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
@@ -41,5 +41,11 @@ export async function fetchFilters(params?: {
 
 	const res = await fetch(url.toString());
 	if (!res.ok) throw new Error(`Failed to load filters: ${res.status}`);
+	return res.json();
+}
+
+export async function fetchDashboard(): Promise<DashboardResponse> {
+	const res = await fetch(`${API_URL}/api/dashboard`);
+	if (!res.ok) throw new Error(`Failed to load dashboard: ${res.status}`);
 	return res.json();
 }

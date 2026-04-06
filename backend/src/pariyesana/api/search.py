@@ -1,9 +1,14 @@
 from fastapi import APIRouter, HTTPException, Query
 
+from pariyesana_db import get_dashboard_stats, get_engine, get_session
+
+from pariyesana.config import settings
 from pariyesana.models.schemas import (
+    DashboardResponse,
     FiltersResponse,
     HealthResponse,
     SearchResponse,
+    WorkerInfo,
 )
 from pariyesana.services.metadata import metadata_store
 from pariyesana.services.search import search_service
@@ -60,6 +65,19 @@ async def filters(
         teachers=metadata_store.list_teachers(center=center, language=language),
         centers=metadata_store.list_centers(teacher=teacher, language=language),
         languages=metadata_store.list_languages(teacher=teacher, center=center),
+    )
+
+
+@router.get("/dashboard", response_model=DashboardResponse)
+async def dashboard() -> DashboardResponse:
+    engine = get_engine(settings.database_url)
+    Session = get_session(engine)
+    with Session() as session:
+        stats = get_dashboard_stats(session)
+    return DashboardResponse(
+        total=stats["total"],
+        status_counts=stats["status_counts"],
+        workers=[WorkerInfo(**w) for w in stats["workers"]],
     )
 
 

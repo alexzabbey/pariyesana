@@ -114,3 +114,43 @@ def get_known_talk_ids(session: Session) -> set[str]:
     """Return all known talk_ids as strings. Used by the scraper for dedup."""
     rows = session.execute(select(Talk.talk_id)).scalars().all()
     return {str(tid) for tid in rows}
+
+
+def get_dashboard_stats(session: Session) -> dict:
+    """Return aggregated stats for the dashboard."""
+    from sqlalchemy import func as sa_func
+
+    # Status counts
+    status_rows = session.execute(
+        select(Talk.status, sa_func.count()).group_by(Talk.status)
+    ).all()
+    status_counts = {status: count for status, count in status_rows}
+
+    # Worker stats: talks completed per worker (from done talks that still have updated_at)
+    # We track by claimed_by on currently claimed talks, and infer completed work
+    # by counting done talks grouped by their last worker
+    # Since we clear claimed_by on done, we need a different approach:
+    # count currently active claims
+    active_workers = session.execute(
+        select(Talk.claimed_by, sa_func.count(), sa_func.min(Talk.claimed_at))
+        .where(Talk.status == "claimed")
+        .where(Talk.claimed_by.isnot(None))
+        .group_by(Talk.claimed_by)
+    ).all()
+    workers = [
+        {
+            "worker_id": row[0],
+            "active_jobs": row[1],
+            "claimed_since": row[2].isoformat() if row[2] else None,
+        }
+        for row in active_workers
+    ]
+
+    # Total count
+    total = sum(status_counts.values())
+
+    return {
+        "total": total,
+        "status_counts": status_counts,
+        "workers": workers,
+    }

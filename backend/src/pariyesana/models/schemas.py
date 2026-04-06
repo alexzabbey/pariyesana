@@ -73,6 +73,18 @@ class HealthResponse(BaseModel):
     passages_count: int
 
 
+class WorkerInfo(BaseModel):
+    worker_id: str
+    active_jobs: int
+    claimed_since: str | None
+
+
+class DashboardResponse(BaseModel):
+    total: int
+    status_counts: dict[str, int]
+    workers: list[WorkerInfo]
+
+
 class TalkMetadata(BaseModel):
     talk_id: int
     date: str

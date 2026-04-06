@@ -46,3 +46,15 @@ export interface FiltersResponse {
 	centers: CenterSummary[];
 	languages: LanguageSummary[];
 }
+
+export interface WorkerInfo {
+	worker_id: string;
+	active_jobs: number;
+	claimed_since: string | null;
+}
+
+export interface DashboardResponse {
+	total: number;
+	status_counts: Record<string, number>;
+	workers: WorkerInfo[];
+}

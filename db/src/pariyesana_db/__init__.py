@@ -4,6 +4,7 @@ from pariyesana_db.queries import (
     claim_next_talk,
     claim_talk,
     get_all_talks,
+    get_dashboard_stats,
     get_known_talk_ids,
     mark_done,
     mark_error,
@@ -21,5 +22,6 @@ __all__ = [
     "mark_done",
     "mark_error",
     "get_all_talks",
+    "get_dashboard_stats",
     "get_known_talk_ids",
 ]
