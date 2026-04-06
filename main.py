@@ -30,6 +30,9 @@ BASE_URL = "https://dharmaseed.org"
 OUTPUT_DIR = Path(__file__).parent / "transcripts"
 DELAY_BETWEEN_TALKS = 10
 WORKER_POLL_INTERVAL = 30
+DELAY_BETWEEN_PAGES = 3  # seconds between scraping requests
+MAX_RETRIES = 5
+INITIAL_BACKOFF = 5  # seconds, doubles each retry
 
 # Languages Parakeet can handle (European)
 EURO_LANGUAGES = {
@@ -44,6 +47,30 @@ SKIP_LANGUAGES = {
 }
 
 
+# --- HTTP helpers ---
+
+def polite_get(client: httpx.Client, url: str, retries: int = MAX_RETRIES) -> httpx.Response:
+    """GET with exponential backoff. Raises after all retries exhausted."""
+    for attempt in range(retries):
+        try:
+            resp = client.get(url)
+            if resp.status_code == 429 or resp.status_code >= 500:
+                wait = INITIAL_BACKOFF * (2 ** attempt)
+                print(f"HTTP | {resp.status_code} on {url} — backing off {wait}s (attempt {attempt+1}/{retries})")
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            return resp
+        except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError) as e:
+            wait = INITIAL_BACKOFF * (2 ** attempt)
+            print(f"HTTP | {type(e).__name__} on {url} — backing off {wait}s (attempt {attempt+1}/{retries})")
+            time.sleep(wait)
+    # Final attempt — let it raise
+    resp = client.get(url)
+    resp.raise_for_status()
+    return resp
+
+
 # --- Scraping ---
 
 def scrape_language_talk_ids(client: httpx.Client, language_filter: int) -> set[str]:
@@ -52,8 +79,7 @@ def scrape_language_talk_ids(client: httpx.Client, language_filter: int) -> set[
     page = 1
     while True:
         url = f"{BASE_URL}/talks/?language_filter={language_filter}&page={page}&sort=rec_date&page_items=100"
-        resp = client.get(url)
-        resp.raise_for_status()
+        resp = polite_get(client, url)
         soup = BeautifulSoup(resp.text, "html.parser")
         talklist = soup.find("div", class_="talklist")
         if not talklist:
@@ -67,6 +93,7 @@ def scrape_language_talk_ids(client: httpx.Client, language_filter: int) -> set[
         if not found:
             break
         page += 1
+        time.sleep(DELAY_BETWEEN_PAGES)
     return talk_ids
 
 
@@ -85,14 +112,14 @@ def build_language_map(client: httpx.Client) -> dict[str, str]:
             lang_map[tid] = lang_name
         if ids:
             print(f"LANG | Found {len(ids)} {lang_name} talks")
+        time.sleep(DELAY_BETWEEN_PAGES)
     return lang_map
 
 
 def scrape_listing_page(client: httpx.Client, page: int) -> list[dict]:
     """Scrape one page of talks listing, return list of talk dicts."""
     url = f"{BASE_URL}/talks/?page={page}&sort=rec_date&page_items=100"
-    resp = client.get(url)
-    resp.raise_for_status()
+    resp = polite_get(client, url)
     soup = BeautifulSoup(resp.text, "html.parser")
 
     # Only search within the talklist div to avoid picking up UI elements
@@ -197,6 +224,26 @@ def scrape_listing_page(client: httpx.Client, page: int) -> list[dict]:
 
 def download_mp3(client: httpx.Client, mp3_url: str, dest: Path) -> None:
     url = mp3_url if mp3_url.startswith("http") else f"{BASE_URL}{mp3_url}"
+    for attempt in range(MAX_RETRIES):
+        try:
+            with client.stream("GET", url) as resp:
+                if resp.status_code == 429 or resp.status_code >= 500:
+                    wait = INITIAL_BACKOFF * (2 ** attempt)
+                    print(f"HTTP | {resp.status_code} downloading {url} — backing off {wait}s (attempt {attempt+1}/{MAX_RETRIES})")
+                    time.sleep(wait)
+                    continue
+                resp.raise_for_status()
+                with open(dest, "wb") as f:
+                    for chunk in resp.iter_bytes(chunk_size=65536):
+                        f.write(chunk)
+                return
+        except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError) as e:
+            wait = INITIAL_BACKOFF * (2 ** attempt)
+            print(f"HTTP | {type(e).__name__} downloading {url} — backing off {wait}s (attempt {attempt+1}/{MAX_RETRIES})")
+            if dest.exists():
+                dest.unlink()
+            time.sleep(wait)
+    # Final attempt — let it raise
     with client.stream("GET", url) as resp:
         resp.raise_for_status()
         with open(dest, "wb") as f:
@@ -288,47 +335,66 @@ def load_model(device: str) -> tuple:
         model = nemo_asr.models.ASRModel.from_pretrained("nvidia/parakeet-tdt-0.6b-v3")
         model.eval()
         model.cuda()
+        # Auto-chunk subsampling conv and use local attention to handle long audio
+        model.change_subsampling_conv_chunking_factor(1)
+        model.change_attention_model("rel_pos_local_attn", [128, 128])
         return model, "cuda"
 
     raise ValueError(f"Unknown device: {device}")
 
 
+def _ensure_wav(audio_path: Path) -> tuple[str, Path | None]:
+    """Convert MP3 to WAV if needed. Returns (wav_path, tmp_path_to_cleanup)."""
+    if audio_path.suffix == ".wav":
+        return str(audio_path), None
+    wav_path = audio_path.with_suffix(".wav")
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", str(audio_path), "-ac", "1", "-ar", "16000", "-f", "wav", str(wav_path)],
+        capture_output=True, check=True,
+    )
+    return str(wav_path), wav_path
+
+
 def transcribe_file(model, audio_path: Path, talk_id: str, backend: str = "mlx") -> None:
     OUTPUT_DIR.mkdir(exist_ok=True)
-    audio = str(audio_path)
     source = audio_path.name
 
-    if backend == "mlx":
-        result = model.generate(audio, chunk_duration=60.0, verbose=True)
-        full_text = result.text
-        segments = None
-        if hasattr(result, "sentences") and result.sentences:
-            segments = [
-                {"text": s.text.strip(), "start": round(s.start, 2), "end": round(s.end, 2)}
-                for s in result.sentences
-            ]
-    else:
-        hypotheses = model.transcribe([audio], batch_size=1, timestamps=True)
-        hyp = hypotheses[0]
-        full_text = hyp.text
-        segments = None
-        if hasattr(hyp, "timestamp") and isinstance(hyp.timestamp, dict) and "segment" in hyp.timestamp:
-            segments = [
-                {"text": s["segment"].strip(), "start": round(s["start"], 2), "end": round(s["end"], 2)}
-                for s in hyp.timestamp["segment"]
-            ]
+    # Convert to WAV for NeMo/CUDA — Lhotse chokes on some MP3 headers
+    wav_audio, wav_tmp = _ensure_wav(audio_path) if backend == "cuda" else (str(audio_path), None)
+    audio = wav_audio
 
-    txt_path = OUTPUT_DIR / f"{talk_id}.txt"
-    txt_path.write_text(full_text)
+    try:
+        if backend == "mlx":
+            result = model.generate(audio, chunk_duration=60.0, verbose=True)
+            full_text = result.text
+            segments = None
+            if hasattr(result, "sentences") and result.sentences:
+                segments = [
+                    {"text": s.text.strip(), "start": round(s.start, 2), "end": round(s.end, 2)}
+                    for s in result.sentences
+                ]
+        else:
+            hypotheses = model.transcribe([audio], batch_size=1, timestamps=True)
+            hyp = hypotheses[0]
+            full_text = hyp.text
+            segments = None
+            if hasattr(hyp, "timestamp") and isinstance(hyp.timestamp, dict) and "segment" in hyp.timestamp:
+                segments = [
+                    {"text": s["segment"].strip(), "start": round(s["start"], 2), "end": round(s["end"], 2)}
+                    for s in hyp.timestamp["segment"]
+                ]
 
-    if segments:
-        try:
-            raw_audio, sr = load_audio_raw(audio)
-            segments = classify_speakers(segments, raw_audio, sr)
-        except Exception as e:
-            print(f"WARN | talk_id={talk_id} | Speaker classification failed ({type(e).__name__}), saving without speaker labels")
-        jsonl_path = OUTPUT_DIR / f"{talk_id}.jsonl"
-        save_segments_jsonl(segments, jsonl_path, source)
+        if segments:
+            try:
+                raw_audio, sr = load_audio_raw(str(audio_path))
+                segments = classify_speakers(segments, raw_audio, sr)
+            except Exception as e:
+                print(f"WARN | talk_id={talk_id} | Speaker classification failed ({type(e).__name__}), saving without speaker labels")
+            jsonl_path = OUTPUT_DIR / f"{talk_id}.jsonl"
+            save_segments_jsonl(segments, jsonl_path, source)
+    finally:
+        if wav_tmp and wav_tmp.exists():
+            wav_tmp.unlink()
 
 
 # --- HTML ---
@@ -433,6 +499,7 @@ def run(device: str = "auto") -> None:
     skip_lang_names = set(SKIP_LANGUAGES.values())
     page = max(1, len(known_ids) // 100 + 1) if known_ids else 1
     print(f"RESUME | Starting from page {page}")
+    consecutive_errors = 0
 
     while True:
         pending_count = _get_pending_count(Session)
