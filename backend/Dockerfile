@@ -4,16 +4,17 @@ RUN pip install uv
 
 WORKDIR /app
 
-# Install shared db package first
+# Copy and install shared db package first
 COPY db/ /tmp/db/
 RUN uv pip install --system /tmp/db/
 
-# Install backend
+# Copy backend source
 COPY backend/pyproject.toml .
 COPY backend/src/ src/
 COPY backend/scripts/ scripts/
 
-RUN uv pip install --system .
+# Install backend deps (pariyesana-db already installed above)
+RUN UV_NO_SOURCES=1 uv pip install --system .
 
 ENV PYTHONPATH=/app/src
 
