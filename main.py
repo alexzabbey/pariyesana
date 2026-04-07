@@ -387,7 +387,9 @@ def transcribe_file(model, audio_path: Path, talk_id: str, backend: str = "mlx")
                     for s in result.sentences
                 ]
         else:
-            hypotheses = model.transcribe([audio], batch_size=1, timestamps=True)
+            import torch
+            with torch.cuda.amp.autocast():
+                hypotheses = model.transcribe([audio], batch_size=1, timestamps=True)
             hyp = hypotheses[0]
             full_text = hyp.text
             segments = None
@@ -406,6 +408,9 @@ def transcribe_file(model, audio_path: Path, talk_id: str, backend: str = "mlx")
             jsonl_path = OUTPUT_DIR / f"{talk_id}.jsonl"
             save_segments_jsonl(segments, jsonl_path, source)
     finally:
+        if backend == "cuda":
+            import torch
+            torch.cuda.empty_cache()
         if wav_tmp and wav_tmp.exists():
             wav_tmp.unlink()
 
