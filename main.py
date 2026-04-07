@@ -368,7 +368,57 @@ def _ensure_wav(audio_path: Path) -> tuple[str, Path | None]:
     return str(wav_path), wav_path
 
 
-def transcribe_file(model, audio_path: Path, talk_id: str, backend: str = "mlx") -> None:
+CHUNK_DURATION_SECS = 600  # 10-minute chunks for CUDA to avoid OOM
+
+
+def _split_wav_chunks(wav_path: str) -> list[tuple[str, float]]:
+    """Split a WAV file into chunks. Returns list of (chunk_path, time_offset)."""
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", wav_path],
+        capture_output=True, text=True, check=True,
+    )
+    duration = float(result.stdout.strip())
+
+    if duration <= CHUNK_DURATION_SECS:
+        return [(wav_path, 0.0)]
+
+    chunks = []
+    offset = 0.0
+    idx = 0
+    base = Path(wav_path)
+    while offset < duration:
+        chunk_path = base.with_stem(f"{base.stem}_chunk{idx}")
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", wav_path, "-ss", str(offset),
+             "-t", str(CHUNK_DURATION_SECS), "-c", "copy", str(chunk_path)],
+            capture_output=True, check=True,
+        )
+        chunks.append((str(chunk_path), offset))
+        offset += CHUNK_DURATION_SECS
+        idx += 1
+    return chunks
+
+
+def _transcribe_cuda(model, audio: str) -> tuple[str, list[dict] | None]:
+    """Transcribe a single audio file with NeMo on CUDA."""
+    import gc
+    import torch
+    with torch.cuda.amp.autocast():
+        hypotheses = model.transcribe([audio], batch_size=1, timestamps=True)
+    hyp = hypotheses[0]
+    full_text = hyp.text
+    segments = None
+    if hasattr(hyp, "timestamp") and isinstance(hyp.timestamp, dict) and "segment" in hyp.timestamp:
+        segments = [
+            {"text": s["segment"].strip(), "start": round(s["start"], 2), "end": round(s["end"], 2)}
+            for s in hyp.timestamp["segment"]
+        ]
+    gc.collect()
+    torch.cuda.empty_cache()
+    return full_text, segments
+
+
+def transcribe_file(model, audio_path: Path, talk_id: str, backend: str = "mlx", split: bool = False) -> None:
     OUTPUT_DIR.mkdir(exist_ok=True)
     source = audio_path.name
 
@@ -387,17 +437,26 @@ def transcribe_file(model, audio_path: Path, talk_id: str, backend: str = "mlx")
                     for s in result.sentences
                 ]
         else:
-            import torch
-            with torch.cuda.amp.autocast():
-                hypotheses = model.transcribe([audio], batch_size=1, timestamps=True)
-            hyp = hypotheses[0]
-            full_text = hyp.text
-            segments = None
-            if hasattr(hyp, "timestamp") and isinstance(hyp.timestamp, dict) and "segment" in hyp.timestamp:
-                segments = [
-                    {"text": s["segment"].strip(), "start": round(s["start"], 2), "end": round(s["end"], 2)}
-                    for s in hyp.timestamp["segment"]
-                ]
+            chunks = _split_wav_chunks(audio) if split else [(audio, 0.0)]
+            all_segments = []
+            all_text = []
+            chunk_paths_to_clean = []
+            try:
+                for chunk_path, time_offset in chunks:
+                    if chunk_path != audio:
+                        chunk_paths_to_clean.append(chunk_path)
+                    text, segs = _transcribe_cuda(model, chunk_path)
+                    all_text.append(text)
+                    if segs:
+                        for s in segs:
+                            s["start"] = round(s["start"] + time_offset, 2)
+                            s["end"] = round(s["end"] + time_offset, 2)
+                        all_segments.extend(segs)
+            finally:
+                for p in chunk_paths_to_clean:
+                    Path(p).unlink(missing_ok=True)
+            full_text = " ".join(all_text)
+            segments = all_segments if all_segments else None
 
         if segments:
             try:
@@ -408,11 +467,6 @@ def transcribe_file(model, audio_path: Path, talk_id: str, backend: str = "mlx")
             jsonl_path = OUTPUT_DIR / f"{talk_id}.jsonl"
             save_segments_jsonl(segments, jsonl_path, source)
     finally:
-        if backend == "cuda":
-            import gc
-            import torch
-            gc.collect()
-            torch.cuda.empty_cache()
         if wav_tmp and wav_tmp.exists():
             wav_tmp.unlink()
 
@@ -496,7 +550,7 @@ def _peek_next_pending(Session):
         ).scalar_one_or_none()
 
 
-def run(device: str = "auto") -> None:
+def run(device: str = "auto", split: bool = False) -> None:
     """Scrape and transcribe talks one by one, oldest first. Resumable."""
     engine = get_engine()
     Base.metadata.create_all(engine)
@@ -567,7 +621,7 @@ def run(device: str = "auto") -> None:
 
         with Session() as session:
             worker_heartbeat(session, worker_id, status="processing", current_talk_id=talk.talk_id)
-        _process_talk(talk, model, backend, client, prefetch_client, Session, worker_id)
+        _process_talk(talk, model, backend, client, prefetch_client, Session, worker_id, split=split)
 
     client.close()
     prefetch_client.close()
@@ -583,7 +637,7 @@ def run(device: str = "auto") -> None:
 
 # --- Main: work (transcribe-only, extra worker machines) ---
 
-def work(device: str = "auto") -> None:
+def work(device: str = "auto", split: bool = False) -> None:
     """Claim and transcribe pending talks. Run on extra worker machines."""
     engine = get_engine()
     Base.metadata.create_all(engine)
@@ -615,12 +669,12 @@ def work(device: str = "auto") -> None:
 
         with Session() as session:
             worker_heartbeat(session, worker_id, status="processing", current_talk_id=talk.talk_id)
-        _process_talk(talk, model, backend, client, prefetch_client, Session, worker_id)
+        _process_talk(talk, model, backend, client, prefetch_client, Session, worker_id, split=split)
 
 
 # --- Shared transcription logic ---
 
-def _process_talk(talk, model, backend, client, prefetch_client, Session, worker_id: str | None = None) -> None:
+def _process_talk(talk, model, backend, client, prefetch_client, Session, worker_id: str | None = None, split: bool = False) -> None:
     """Download, transcribe, and mark done a single claimed talk."""
     talk_id = str(talk.talk_id)
     title = talk.title
@@ -687,7 +741,7 @@ def _process_talk(talk, model, backend, client, prefetch_client, Session, worker
             print(f"RESUME | talk_id={talk_id} | MP3 on disk ({size_mb:.1f} MB), skipping download")
 
         print(f"TRANSCRIBE | talk_id={talk_id} | \"{title}\" by {teacher} | Starting...")
-        transcribe_file(model, mp3_path, talk_id, backend)
+        transcribe_file(model, mp3_path, talk_id, backend, split=split)
         print(f"TRANSCRIBE | talk_id={talk_id} | Complete")
 
         mp3_path.unlink()
@@ -728,10 +782,14 @@ def main() -> None:
     run_p = sub.add_parser("run", help="Scrape and transcribe (primary machine)")
     run_p.add_argument("--device", choices=["mlx", "cuda", "auto"], default="auto",
                        help="Compute backend: mlx (Apple Silicon), cuda (NVIDIA GPU), auto (detect)")
+    run_p.add_argument("--split", action="store_true",
+                       help="Split long audio into chunks before transcribing (reduces VRAM usage)")
 
     work_p = sub.add_parser("work", help="Transcribe-only worker (extra machines)")
     work_p.add_argument("--device", choices=["mlx", "cuda", "auto"], default="auto",
                         help="Compute backend: mlx (Apple Silicon), cuda (NVIDIA GPU), auto (detect)")
+    work_p.add_argument("--split", action="store_true",
+                       help="Split long audio into chunks before transcribing (reduces VRAM usage)")
 
     html_p = sub.add_parser("html", help="Generate chat HTML for a talk")
     html_p.add_argument("talk_id", help="Talk ID to generate HTML for")
@@ -743,9 +801,9 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "run":
-        run(device=args.device)
+        run(device=args.device, split=args.split)
     elif args.command == "work":
-        work(device=args.device)
+        work(device=args.device, split=args.split)
     elif args.command == "html":
         talk_id = args.talk_id
         jsonl_path = OUTPUT_DIR / f"{talk_id}.jsonl"
