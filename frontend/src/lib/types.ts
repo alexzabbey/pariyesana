@@ -60,6 +60,7 @@ export interface RecentTalk {
 	talk_id: number;
 	title: string;
 	status: string;
+	claimed_by: string | null;
 	updated_at: string;
 }
 

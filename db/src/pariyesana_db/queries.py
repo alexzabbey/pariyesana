@@ -187,6 +187,7 @@ def get_dashboard_stats(session: Session) -> dict:
             "talk_id": t.talk_id,
             "title": t.title,
             "status": t.status,
+            "claimed_by": t.claimed_by,
             "updated_at": t.updated_at.isoformat(),
         }
         for t in recent_talks

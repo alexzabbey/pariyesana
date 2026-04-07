@@ -86,6 +86,7 @@ class RecentTalk(BaseModel):
     talk_id: int
     title: str
     status: str
+    claimed_by: str | None
     updated_at: str
 
 

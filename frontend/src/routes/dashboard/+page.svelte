@@ -80,21 +80,21 @@
     <title>Dashboard &mdash; Pariyesan&#x101;</title>
 </svelte:head>
 
-<main class="mx-auto w-full max-w-[640px] px-6 pt-6 pb-16 max-sm:px-4">
+<main class="mx-auto w-full max-w-[960px] px-6 pt-4 pb-8 max-sm:px-4">
     <!-- Header -->
-    <header class="mb-8 text-center">
+    <header class="mb-4 text-center">
         <a
             href="/"
-            class="font-heading text-xl font-semibold text-primary -tracking-wide no-underline hover:no-underline"
+            class="font-heading text-lg font-semibold text-primary -tracking-wide no-underline hover:no-underline"
         >
             Pariyesan&#x101;
         </a>
-        <p class="mt-1 text-sm text-muted-foreground">Transcription Pipeline</p>
+        <p class="text-xs text-muted-foreground">Transcription Pipeline</p>
     </header>
 
     {#if error}
-        <Card.Root class="mb-6 border-destructive/30 bg-destructive/5">
-            <Card.Content class="py-3 text-center text-sm text-destructive">
+        <Card.Root class="mb-4 border-destructive/30 bg-destructive/5">
+            <Card.Content class="py-2 text-center text-sm text-destructive">
                 {error}
             </Card.Content>
         </Card.Root>
@@ -102,22 +102,22 @@
 
     {#if data}
         <!-- Progress -->
-        <section class="mb-8 fade-in" style="animation-delay: 0ms">
-            <div class="mb-2 flex items-baseline justify-between">
+        <section class="mb-4 fade-in" style="animation-delay: 0ms">
+            <div class="mb-1.5 flex items-baseline justify-between">
                 <span class="text-xs font-medium uppercase tracking-widest text-muted-foreground">
                     Progress
                 </span>
                 <span class="tabular-nums">
-                    <span class="text-2xl font-semibold text-primary">{doneCount.toLocaleString()}</span>
+                    <span class="text-xl font-semibold text-primary">{doneCount.toLocaleString()}</span>
                     <span class="text-sm text-muted-foreground">
                         / {totalTranscribable.toLocaleString()}
                     </span>
-                    <span class="ml-1.5 text-xs text-muted-foreground">
+                    <span class="ml-1 text-xs text-muted-foreground">
                         ({progressPct.toFixed(1)}%)
                     </span>
                 </span>
             </div>
-            <div class="h-2 overflow-hidden rounded-full bg-secondary">
+            <div class="h-1.5 overflow-hidden rounded-full bg-secondary">
                 <div
                     class="h-full rounded-full bg-primary transition-all duration-700 ease-out"
                     style="width: {progressPct}%"
@@ -126,32 +126,18 @@
         </section>
 
         <!-- Status cards -->
-        <section class="mb-8 fade-in" style="animation-delay: 80ms">
-            <h2 class="mb-3 text-xs font-medium uppercase tracking-widest text-muted-foreground">
-                By Status
-            </h2>
-            <div class="grid grid-cols-2 gap-3 sm:grid-cols-3">
+        <section class="mb-4 fade-in" style="animation-delay: 60ms">
+            <div class="grid grid-cols-3 gap-2 sm:grid-cols-6">
                 {#each sortedStatuses as status, i}
                     {@const count = data.status_counts[status] ?? 0}
                     {@const meta = STATUS_META[status]}
-                    {@const pct = data.total > 0 ? (count / data.total) * 100 : 0}
-                    <Card.Root class="card-item" style="animation-delay: {i * 60 + 160}ms">
-                        <Card.Content class="p-4">
-                            <div class="mb-1 flex items-center justify-between">
-                                <span class="font-heading text-2xl font-semibold tabular-nums text-foreground">
+                    <Card.Root class="card-item" style="animation-delay: {i * 40 + 100}ms">
+                        <Card.Content class="px-3 py-2">
+                            <div class="flex items-center justify-between gap-1">
+                                <span class="font-heading text-lg font-semibold tabular-nums text-foreground">
                                     {count.toLocaleString()}
                                 </span>
-                                <Badge variant={meta.variant}>{meta.label}</Badge>
-                            </div>
-                            <div class="mt-2 h-1 overflow-hidden rounded-full bg-secondary">
-                                <div
-                                    class="h-full rounded-full transition-all duration-500 ease-out"
-                                    class:bg-primary={status === "done"}
-                                    class:bg-muted-foreground={status === "pending" || status === "skip_language" || status === "no_mp3"}
-                                    class:bg-chart-2={status === "claimed"}
-                                    class:bg-destructive={status === "error"}
-                                    style="width: {pct}%"
-                                ></div>
+                                <Badge variant={meta.variant} class="text-[10px] px-1.5 py-0">{meta.label}</Badge>
                             </div>
                         </Card.Content>
                     </Card.Root>
@@ -159,89 +145,103 @@
             </div>
         </section>
 
-        <Separator class="mb-8" />
+        <Separator class="mb-4" />
 
-        <!-- Workers -->
-        <section class="mb-8 fade-in" style="animation-delay: 160ms">
-            <h2 class="mb-3 text-xs font-medium uppercase tracking-widest text-muted-foreground">
-                Workers
-            </h2>
-            {#if data.workers.length === 0}
-                <Card.Root>
-                    <Card.Content class="py-8 text-center text-sm text-muted-foreground">
-                        No workers currently active
-                    </Card.Content>
-                </Card.Root>
-            {:else}
-                <div class="flex flex-col gap-2">
-                    {#each data.workers as worker, i}
-                        <Card.Root class="card-item" style="animation-delay: {i * 60 + 240}ms">
+        <!-- Workers + Recent activity side by side -->
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 fade-in" style="animation-delay: 120ms">
+            <!-- Workers -->
+            <section>
+                <h2 class="mb-2 text-xs font-medium uppercase tracking-widest text-muted-foreground">
+                    Workers
+                </h2>
+                {#if data.workers.length === 0}
+                    <Card.Root>
+                        <Card.Content class="py-6 text-center text-sm text-muted-foreground">
+                            No workers
+                        </Card.Content>
+                    </Card.Root>
+                {:else}
+                    <div class="flex flex-col gap-1.5">
+                        {#each data.workers as worker, i}
                             {@const active = isWorkerActive(worker.last_heartbeat)}
-                            <Card.Content class="flex items-center gap-3 p-4">
-                                <span class="relative flex h-2.5 w-2.5 shrink-0">
-                                    {#if active}
-                                        <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-60"></span>
-                                        <span class="relative inline-flex h-2.5 w-2.5 rounded-full bg-primary"></span>
-                                    {:else}
-                                        <span class="relative inline-flex h-2.5 w-2.5 rounded-full bg-muted-foreground"></span>
-                                    {/if}
-                                </span>
-                                <div class="min-w-0 flex-1">
-                                    <div class="truncate text-sm font-medium text-foreground">
-                                        {worker.worker_id}
-                                    </div>
-                                    <div class="flex items-center gap-1.5 text-xs text-muted-foreground">
-                                        <span>{worker.talks_completed} done</span>
-                                        <span class="text-border">&middot;</span>
-                                        <span>up {uptime(worker.started_at)}</span>
-                                        {#if !active}
+                            <Card.Root class="card-item" style="animation-delay: {i * 40 + 160}ms">
+                                <Card.Content class="flex items-center gap-2.5 px-3 py-2">
+                                    <span class="relative flex h-2 w-2 shrink-0">
+                                        {#if active}
+                                            <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-60"></span>
+                                            <span class="relative inline-flex h-2 w-2 rounded-full bg-primary"></span>
+                                        {:else}
+                                            <span class="relative inline-flex h-2 w-2 rounded-full bg-muted-foreground"></span>
+                                        {/if}
+                                    </span>
+                                    <div class="min-w-0 flex-1">
+                                        <div class="truncate text-sm font-medium text-foreground">
+                                            {worker.worker_id}
+                                        </div>
+                                        <div class="flex items-center gap-1 text-[11px] text-muted-foreground">
+                                            <span>{worker.talks_completed} done</span>
                                             <span class="text-border">&middot;</span>
-                                            <span>last seen {timeAgo(worker.last_heartbeat)}</span>
+                                            <span>up {uptime(worker.started_at)}</span>
+                                            {#if !active}
+                                                <span class="text-border">&middot;</span>
+                                                <span>{timeAgo(worker.last_heartbeat)}</span>
+                                            {/if}
+                                        </div>
+                                    </div>
+                                    <Badge variant={active ? "default" : "outline"} class="shrink-0 text-[10px] px-1.5 py-0">
+                                        {active ? "active" : "inactive"}
+                                    </Badge>
+                                </Card.Content>
+                            </Card.Root>
+                        {/each}
+                    </div>
+                {/if}
+            </section>
+
+            <!-- Recent activity -->
+            <section>
+                <h2 class="mb-2 text-xs font-medium uppercase tracking-widest text-muted-foreground">
+                    Recent Activity
+                </h2>
+                {#if data.recent_talks.length === 0}
+                    <Card.Root>
+                        <Card.Content class="py-6 text-center text-sm text-muted-foreground">
+                            No recent activity
+                        </Card.Content>
+                    </Card.Root>
+                {:else}
+                    <div class="flex flex-col gap-1">
+                        {#each data.recent_talks as talk, i}
+                            {@const meta = STATUS_META[talk.status]}
+                            <div class="flex items-center gap-2 rounded-md border px-2.5 py-1.5 card-item" style="animation-delay: {i * 40 + 200}ms">
+                                <div class="min-w-0 flex-1">
+                                    <div class="truncate text-sm text-foreground">
+                                        #{talk.talk_id}
+                                        {#if talk.title}
+                                            <span class="text-muted-foreground">&mdash;</span>
+                                            <span class="text-muted-foreground">{talk.title}</span>
+                                        {/if}
+                                    </div>
+                                    <div class="flex items-center gap-1 text-[11px] text-muted-foreground">
+                                        <span>{timeAgo(talk.updated_at)}</span>
+                                        {#if talk.claimed_by}
+                                            <span class="text-border">&middot;</span>
+                                            <span>{talk.claimed_by}</span>
                                         {/if}
                                     </div>
                                 </div>
-                                <Badge variant={active ? "default" : "outline"} class="shrink-0">
-                                    {active ? "active" : "inactive"}
-                                </Badge>
-                            </Card.Content>
-                        </Card.Root>
-                    {/each}
-                </div>
-            {/if}
-        </section>
-
-        <!-- Recent activity -->
-        {#if data.recent_talks.length > 0}
-            <Separator class="mb-8" />
-            <section class="mb-8 fade-in" style="animation-delay: 240ms">
-                <h2 class="mb-3 text-xs font-medium uppercase tracking-widest text-muted-foreground">
-                    Recent Activity
-                </h2>
-                <div class="flex flex-col gap-1.5">
-                    {#each data.recent_talks as talk, i}
-                        {@const meta = STATUS_META[talk.status]}
-                        <div class="flex items-center justify-between rounded-md border px-3 py-2 card-item" style="animation-delay: {i * 40 + 320}ms">
-                            <div class="min-w-0 flex-1">
-                                <div class="truncate text-sm text-foreground">
-                                    #{talk.talk_id}
-                                    <span class="text-muted-foreground">&mdash;</span>
-                                    {talk.title || "Untitled"}
-                                </div>
-                            </div>
-                            <div class="ml-3 flex shrink-0 items-center gap-2">
-                                <span class="text-xs text-muted-foreground">{timeAgo(talk.updated_at)}</span>
                                 {#if meta}
-                                    <Badge variant={meta.variant}>{meta.label}</Badge>
+                                    <Badge variant={meta.variant} class="shrink-0 text-[10px] px-1.5 py-0">{meta.label}</Badge>
                                 {/if}
                             </div>
-                        </div>
-                    {/each}
-                </div>
+                        {/each}
+                    </div>
+                {/if}
             </section>
-        {/if}
+        </div>
 
         <!-- Footer -->
-        <footer class="text-center text-xs text-muted-foreground fade-in" style="animation-delay: 320ms">
+        <footer class="mt-4 text-center text-xs text-muted-foreground fade-in" style="animation-delay: 200ms">
             {data.total.toLocaleString()} talks tracked
             {#if lastUpdated}
                 &middot; updated {lastUpdated.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
