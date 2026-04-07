@@ -409,7 +409,9 @@ def transcribe_file(model, audio_path: Path, talk_id: str, backend: str = "mlx")
             save_segments_jsonl(segments, jsonl_path, source)
     finally:
         if backend == "cuda":
+            import gc
             import torch
+            gc.collect()
             torch.cuda.empty_cache()
         if wav_tmp and wav_tmp.exists():
             wav_tmp.unlink()
