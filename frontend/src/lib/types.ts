@@ -56,8 +56,16 @@ export interface WorkerInfo {
 	talks_completed: number;
 }
 
+export interface RecentTalk {
+	talk_id: number;
+	title: string;
+	status: string;
+	updated_at: string;
+}
+
 export interface DashboardResponse {
 	total: number;
 	status_counts: Record<string, number>;
 	workers: WorkerInfo[];
+	recent_talks: RecentTalk[];
 }

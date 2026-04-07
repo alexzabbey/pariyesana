@@ -70,6 +70,10 @@
         const days = Math.floor(hrs / 24);
         return `${days}d ${hrs % 24}h`;
     }
+
+    function isWorkerActive(iso: string): boolean {
+        return Date.now() - new Date(iso).getTime() < 2 * 60 * 1000;
+    }
 </script>
 
 <svelte:head>
@@ -160,7 +164,7 @@
         <!-- Workers -->
         <section class="mb-8 fade-in" style="animation-delay: 160ms">
             <h2 class="mb-3 text-xs font-medium uppercase tracking-widest text-muted-foreground">
-                Active Workers
+                Workers
             </h2>
             {#if data.workers.length === 0}
                 <Card.Root>
@@ -172,9 +176,10 @@
                 <div class="flex flex-col gap-2">
                     {#each data.workers as worker, i}
                         <Card.Root class="card-item" style="animation-delay: {i * 60 + 240}ms">
+                            {@const active = isWorkerActive(worker.last_heartbeat)}
                             <Card.Content class="flex items-center gap-3 p-4">
                                 <span class="relative flex h-2.5 w-2.5 shrink-0">
-                                    {#if worker.status === "processing"}
+                                    {#if active}
                                         <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-60"></span>
                                         <span class="relative inline-flex h-2.5 w-2.5 rounded-full bg-primary"></span>
                                     {:else}
@@ -186,17 +191,17 @@
                                         {worker.worker_id}
                                     </div>
                                     <div class="flex items-center gap-1.5 text-xs text-muted-foreground">
-                                        {#if worker.status === "processing" && worker.current_talk_id}
-                                            <span>talk #{worker.current_talk_id}</span>
-                                            <span class="text-border">&middot;</span>
-                                        {/if}
                                         <span>{worker.talks_completed} done</span>
                                         <span class="text-border">&middot;</span>
                                         <span>up {uptime(worker.started_at)}</span>
+                                        {#if !active}
+                                            <span class="text-border">&middot;</span>
+                                            <span>last seen {timeAgo(worker.last_heartbeat)}</span>
+                                        {/if}
                                     </div>
                                 </div>
-                                <Badge variant={worker.status === "processing" ? "default" : "outline"} class="shrink-0">
-                                    {worker.status === "processing" ? "processing" : "idle"}
+                                <Badge variant={active ? "default" : "outline"} class="shrink-0">
+                                    {active ? "active" : "inactive"}
                                 </Badge>
                             </Card.Content>
                         </Card.Root>
@@ -205,8 +210,38 @@
             {/if}
         </section>
 
+        <!-- Recent activity -->
+        {#if data.recent_talks.length > 0}
+            <Separator class="mb-8" />
+            <section class="mb-8 fade-in" style="animation-delay: 240ms">
+                <h2 class="mb-3 text-xs font-medium uppercase tracking-widest text-muted-foreground">
+                    Recent Activity
+                </h2>
+                <div class="flex flex-col gap-1.5">
+                    {#each data.recent_talks as talk, i}
+                        {@const meta = STATUS_META[talk.status]}
+                        <div class="flex items-center justify-between rounded-md border px-3 py-2 card-item" style="animation-delay: {i * 40 + 320}ms">
+                            <div class="min-w-0 flex-1">
+                                <div class="truncate text-sm text-foreground">
+                                    #{talk.talk_id}
+                                    <span class="text-muted-foreground">&mdash;</span>
+                                    {talk.title || "Untitled"}
+                                </div>
+                            </div>
+                            <div class="ml-3 flex shrink-0 items-center gap-2">
+                                <span class="text-xs text-muted-foreground">{timeAgo(talk.updated_at)}</span>
+                                {#if meta}
+                                    <Badge variant={meta.variant}>{meta.label}</Badge>
+                                {/if}
+                            </div>
+                        </div>
+                    {/each}
+                </div>
+            </section>
+        {/if}
+
         <!-- Footer -->
-        <footer class="text-center text-xs text-muted-foreground fade-in" style="animation-delay: 240ms">
+        <footer class="text-center text-xs text-muted-foreground fade-in" style="animation-delay: 320ms">
             {data.total.toLocaleString()} talks tracked
             {#if lastUpdated}
                 &middot; updated {lastUpdated.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}

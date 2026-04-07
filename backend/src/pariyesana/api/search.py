@@ -7,6 +7,7 @@ from pariyesana.models.schemas import (
     DashboardResponse,
     FiltersResponse,
     HealthResponse,
+    RecentTalk,
     SearchResponse,
     WorkerInfo,
 )
@@ -78,6 +79,7 @@ async def dashboard() -> DashboardResponse:
         total=stats["total"],
         status_counts=stats["status_counts"],
         workers=[WorkerInfo(**w) for w in stats["workers"]],
+        recent_talks=[RecentTalk(**t) for t in stats["recent_talks"]],
     )
 
 

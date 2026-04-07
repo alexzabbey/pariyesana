@@ -82,10 +82,18 @@ class WorkerInfo(BaseModel):
     talks_completed: int
 
 
+class RecentTalk(BaseModel):
+    talk_id: int
+    title: str
+    status: str
+    updated_at: str
+
+
 class DashboardResponse(BaseModel):
     total: int
     status_counts: dict[str, int]
     workers: list[WorkerInfo]
+    recent_talks: list[RecentTalk]
 
 
 class TalkMetadata(BaseModel):

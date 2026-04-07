@@ -156,9 +156,10 @@ def get_dashboard_stats(session: Session) -> dict:
     ).all()
     status_counts = {status: count for status, count in status_rows}
 
-    # Workers with a recent heartbeat (within WORKER_TIMEOUT_MINUTES)
-    cutoff = datetime.now(timezone.utc) - timedelta(minutes=WORKER_TIMEOUT_MINUTES)
-    active_workers = session.execute(
+    # Workers seen in the last 10 minutes (frontend determines active/inactive
+    # based on whether last_heartbeat is within 2 minutes)
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+    recent_workers = session.execute(
         select(Worker)
         .where(Worker.last_heartbeat >= cutoff)
         .order_by(Worker.started_at)
@@ -172,7 +173,23 @@ def get_dashboard_stats(session: Session) -> dict:
             "started_at": w.started_at.isoformat(),
             "talks_completed": w.talks_completed,
         }
-        for w in active_workers
+        for w in recent_workers
+    ]
+
+    # Last 5 talks whose status changed (by updated_at)
+    recent_talks = session.execute(
+        select(Talk)
+        .order_by(Talk.updated_at.desc())
+        .limit(5)
+    ).scalars().all()
+    recent = [
+        {
+            "talk_id": t.talk_id,
+            "title": t.title,
+            "status": t.status,
+            "updated_at": t.updated_at.isoformat(),
+        }
+        for t in recent_talks
     ]
 
     # Total count
@@ -182,4 +199,5 @@ def get_dashboard_stats(session: Session) -> dict:
         "total": total,
         "status_counts": status_counts,
         "workers": workers,
+        "recent_talks": recent,
     }
