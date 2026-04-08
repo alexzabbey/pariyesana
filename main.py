@@ -591,8 +591,6 @@ def run(device: str = "auto", split: bool = False) -> None:
     skip_lang_names = set(SKIP_LANGUAGES.values())
     page = max(1, len(known_ids) // 100 + 1) if known_ids else 1
     print(f"RESUME | Starting from page {page}")
-    consecutive_errors = 0
-
     while True:
         pending_count = _get_pending_count(Session)
 
@@ -642,9 +640,9 @@ def run(device: str = "auto", split: bool = False) -> None:
 
     # Sweep any leftover MP3s
     project_dir = Path(__file__).parent
-    for mp3 in project_dir.glob("*.mp3"):
-        mp3.unlink()
-        print(f"CLEANUP | Deleted leftover MP3: {mp3.name}")
+    for leftover in list(project_dir.glob("*.mp3")) + list(project_dir.glob("*.wav")):
+        leftover.unlink()
+        print(f"CLEANUP | Deleted leftover: {leftover.name}")
 
     print("RUN COMPLETE")
 
@@ -704,8 +702,7 @@ def _process_talk(talk, model, backend, client, prefetch_client, Session, worker
 
     if not mp3_url:
         with Session() as session:
-            from pariyesana_db.models import Talk as TalkModel
-            row = session.get(TalkModel, talk.talk_id)
+            row = session.get(Talk, talk.talk_id)
             if row:
                 row.status = "no_mp3"
                 row.claimed_by = None
@@ -738,7 +735,8 @@ def _process_talk(talk, model, backend, client, prefetch_client, Session, worker
         next_mp3_url = next_talk.mp3_url
         next_mp3_path = Path(__file__).parent / f"{next_id}.mp3"
         next_already_done = (OUTPUT_DIR / f"{next_id}.txt").exists() and (OUTPUT_DIR / f"{next_id}.jsonl").exists()
-        if next_mp3_url and not next_mp3_path.exists() and not next_already_done:
+        next_skip = _error_counts.get(next_talk.talk_id, 0) >= MAX_RETRIES
+        if next_mp3_url and not next_mp3_path.exists() and not next_already_done and not next_skip:
             def _prefetch(c=prefetch_client, url=next_mp3_url, dest=next_mp3_path, tid=next_id):
                 try:
                     download_mp3(c, url, dest)
@@ -779,8 +777,6 @@ def _process_talk(talk, model, backend, client, prefetch_client, Session, worker
         _error_counts[talk.talk_id] = _error_counts.get(talk.talk_id, 0) + 1
         count = _error_counts[talk.talk_id]
         print(f"ERROR | talk_id={talk_id} | \"{title}\" by {teacher} | {type(e).__name__}: {e} (attempt {count}/{MAX_RETRIES})")
-        if mp3_path.exists():
-            mp3_path.unlink()
         with Session() as session:
             mark_error(session, talk.talk_id)
         wid = worker_id or talk.claimed_by or "unknown"
