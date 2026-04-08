@@ -896,6 +896,7 @@ def cleanup(device: str = "auto") -> None:
             with Session() as session:
                 mark_done(session, int(talk_id))
             audio_path.unlink()
+            upload_transcript(talk_id)
             print(f"DONE | talk_id={talk_id} | Transcribed and deleted {audio_path.name}")
         except Exception as e:
             print(f"ERROR | talk_id={talk_id} | {type(e).__name__}: {e}")
