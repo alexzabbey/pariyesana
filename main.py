@@ -52,21 +52,33 @@ SKIP_LANGUAGES = {
 
 # --- HTTP helpers ---
 
+def _backoff(attempt: int, resp: httpx.Response | None = None) -> float:
+    """Calculate wait time: use Retry-After header if present, else exponential backoff with jitter."""
+    if resp is not None and "retry-after" in resp.headers:
+        try:
+            return float(resp.headers["retry-after"])
+        except ValueError:
+            pass
+    import random
+    base = INITIAL_BACKOFF * (2 ** attempt)
+    return base + random.uniform(0, base * 0.5)
+
+
 def polite_get(client: httpx.Client, url: str, retries: int = MAX_RETRIES) -> httpx.Response:
     """GET with exponential backoff. Raises after all retries exhausted."""
     for attempt in range(retries):
         try:
             resp = client.get(url)
             if resp.status_code == 429 or resp.status_code >= 500:
-                wait = INITIAL_BACKOFF * (2 ** attempt)
-                print(f"HTTP | {resp.status_code} on {url} — backing off {wait}s (attempt {attempt+1}/{retries})")
+                wait = _backoff(attempt, resp)
+                print(f"HTTP | {resp.status_code} on {url} — backing off {wait:.0f}s (attempt {attempt+1}/{retries})")
                 time.sleep(wait)
                 continue
             resp.raise_for_status()
             return resp
         except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError) as e:
-            wait = INITIAL_BACKOFF * (2 ** attempt)
-            print(f"HTTP | {type(e).__name__} on {url} — backing off {wait}s (attempt {attempt+1}/{retries})")
+            wait = _backoff(attempt)
+            print(f"HTTP | {type(e).__name__} on {url} — backing off {wait:.0f}s (attempt {attempt+1}/{retries})")
             time.sleep(wait)
     # Final attempt — let it raise
     resp = client.get(url)
@@ -242,8 +254,8 @@ def download_mp3(client: httpx.Client, mp3_url: str, dest: Path) -> None:
         try:
             with client.stream("GET", url) as resp:
                 if resp.status_code == 429 or resp.status_code >= 500:
-                    wait = INITIAL_BACKOFF * (2 ** attempt)
-                    print(f"HTTP | {resp.status_code} downloading {url} — backing off {wait}s (attempt {attempt+1}/{MAX_RETRIES})")
+                    wait = _backoff(attempt, resp)
+                    print(f"HTTP | {resp.status_code} downloading {url} — backing off {wait:.0f}s (attempt {attempt+1}/{MAX_RETRIES})")
                     time.sleep(wait)
                     continue
                 resp.raise_for_status()
@@ -252,8 +264,8 @@ def download_mp3(client: httpx.Client, mp3_url: str, dest: Path) -> None:
                         f.write(chunk)
                 return
         except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError) as e:
-            wait = INITIAL_BACKOFF * (2 ** attempt)
-            print(f"HTTP | {type(e).__name__} downloading {url} — backing off {wait}s (attempt {attempt+1}/{MAX_RETRIES})")
+            wait = _backoff(attempt)
+            print(f"HTTP | {type(e).__name__} downloading {url} — backing off {wait:.0f}s (attempt {attempt+1}/{MAX_RETRIES})")
             if dest.exists():
                 dest.unlink()
             time.sleep(wait)
@@ -414,6 +426,7 @@ def _transcribe_cuda(model, audio: str) -> tuple[str, list[dict] | None]:
             {"text": s["segment"].strip(), "start": round(s["start"], 2), "end": round(s["end"], 2)}
             for s in hyp.timestamp["segment"]
         ]
+    del hypotheses, hyp
     gc.collect()
     torch.cuda.empty_cache()
     return full_text, segments
@@ -429,7 +442,7 @@ def transcribe_file(model, audio_path: Path, talk_id: str, backend: str = "mlx",
 
     try:
         if backend == "mlx":
-            result = model.generate(audio, chunk_duration=60.0, verbose=True)
+            result = model.generate(audio, chunk_duration=60.0, verbose=False)
             full_text = result.text
             segments = None
             if hasattr(result, "sentences") and result.sentences:
