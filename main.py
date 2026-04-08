@@ -358,6 +358,8 @@ def load_model(device: str) -> tuple:
     if device == "cuda":
         import torch
         import nemo.collections.asr as nemo_asr
+        # Disable expandable segments to avoid CUDACachingAllocator assert failures
+        torch.cuda.memory._set_allocator_settings("expandable_segments:False")
         model = nemo_asr.models.ASRModel.from_pretrained("nvidia/parakeet-tdt-0.6b-v3")
         model.eval()
         model.cuda()
@@ -428,7 +430,6 @@ def _transcribe_cuda(model, audio: str) -> tuple[str, list[dict] | None]:
         ]
     del hypotheses, hyp
     gc.collect()
-    torch.cuda.empty_cache()
     return full_text, segments
 
 
