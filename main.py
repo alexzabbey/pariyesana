@@ -560,6 +560,23 @@ def _peek_next_pending(Session):
         ).scalar_one_or_none()
 
 
+def upload_transcript(talk_id: str) -> None:
+    """Upload JSONL to server in a background thread."""
+    jsonl_path = OUTPUT_DIR / f"{talk_id}.jsonl"
+    if not jsonl_path.exists():
+        return
+    def _upload(path=jsonl_path, tid=talk_id):
+        result = subprocess.run(
+            ["scp", str(path), "oci-pariyesana:~/pariyesana/transcripts/"],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            print(f"UPLOAD | talk_id={tid} | Uploaded to server")
+        else:
+            print(f"UPLOAD | talk_id={tid} | Failed: {result.stderr.strip()}")
+    threading.Thread(target=_upload, daemon=True).start()
+
+
 def run(device: str = "auto") -> None:
     """Scrape and transcribe talks one by one, oldest first. Resumable."""
     engine = get_engine()
@@ -719,6 +736,7 @@ def _process_talk(talk, model, backend, client, prefetch_client, Session, worker
         wid = worker_id or talk.claimed_by or "unknown"
         with Session() as session:
             worker_heartbeat(session, wid, status="idle", inc_completed=True)
+        upload_transcript(talk_id)
         return
 
     mp3_path = Path(__file__).parent / f"{talk_id}.mp3"
@@ -767,6 +785,7 @@ def _process_talk(talk, model, backend, client, prefetch_client, Session, worker
         wid = worker_id or talk.claimed_by or "unknown"
         with Session() as session:
             worker_heartbeat(session, wid, status="idle", inc_completed=True)
+        upload_transcript(talk_id)
         print(f"DONE | talk_id={talk_id} | \"{title}\" by {teacher}")
 
     except Exception as e:
@@ -909,6 +928,9 @@ def main() -> None:
     migrate_p.add_argument("--csv", default="talks.csv", help="Path to talks.csv")
     migrate_p.add_argument("--transcripts", default="transcripts", help="Path to transcripts directory")
 
+    sub.add_parser("sync", help="Pull all transcripts from server via rsync")
+    sub.add_parser("upload", help="Backfill-upload all local JSONLs to server")
+
     args = parser.parse_args()
 
     if args.command == "cleanup-dry":
@@ -942,6 +964,26 @@ def main() -> None:
             pass
         html_path = OUTPUT_DIR / f"{talk_id}.html"
         generate_chat_html(segments, title, html_path)
+    elif args.command == "sync":
+        print("SYNC | Pulling transcripts from server...")
+        result = subprocess.run(
+            ["rsync", "-az", "--progress", "oci-pariyesana:~/pariyesana/transcripts/", str(OUTPUT_DIR) + "/"],
+        )
+        if result.returncode == 0:
+            print("SYNC | Complete")
+        else:
+            print(f"SYNC | Failed (exit code {result.returncode})")
+    elif args.command == "upload":
+        jsonls = sorted(OUTPUT_DIR.glob("*.jsonl"))
+        print(f"UPLOAD | Uploading {len(jsonls)} JSONLs to server...")
+        result = subprocess.run(
+            ["rsync", "-az", "--progress", "--include=*.jsonl", "--exclude=*",
+             str(OUTPUT_DIR) + "/", "oci-pariyesana:~/pariyesana/transcripts/"],
+        )
+        if result.returncode == 0:
+            print(f"UPLOAD | Complete ({len(jsonls)} files)")
+        else:
+            print(f"UPLOAD | Failed (exit code {result.returncode})")
     elif args.command == "migrate":
         from pariyesana_db.migrate import migrate
         migrate(args.csv, args.transcripts)
