@@ -788,7 +788,7 @@ def _process_talk(talk, model, backend, client, prefetch_client, Session, worker
 # --- CLI ---
 
 def cleanup_dry() -> None:
-    """Report status of local MP3 files against transcripts and DB."""
+    """Report summary of local MP3 files against transcripts and DB."""
     project_dir = Path(__file__).parent
     mp3s = sorted(project_dir.glob("*.mp3"))
     if not mp3s:
@@ -798,24 +798,88 @@ def cleanup_dry() -> None:
     engine = get_engine()
     Session = get_session(engine)
 
+    total_size = 0.0
+    deletable_size = 0.0
+    by_status: dict[str, list[str]] = {}
+
     for mp3 in mp3s:
         talk_id = mp3.stem
         size_mb = mp3.stat().st_size / 1024 / 1024
+        total_size += size_mb
         has_txt = (OUTPUT_DIR / f"{talk_id}.txt").exists()
         has_jsonl = (OUTPUT_DIR / f"{talk_id}.jsonl").exists()
 
-        db_status = "not found"
+        db_status = "not in db"
+        claimed_by = None
         try:
             with Session() as session:
                 row = session.get(Talk, int(talk_id))
                 if row:
                     db_status = row.status
+                    claimed_by = row.claimed_by
         except (ValueError, Exception):
             pass
 
-        transcript = "txt+jsonl" if has_txt and has_jsonl else "txt" if has_txt else "jsonl" if has_jsonl else "none"
-        action = "safe to delete" if has_txt and has_jsonl and db_status == "done" else "keep"
-        print(f"{mp3.name} ({size_mb:.1f} MB) | transcripts: {transcript} | db: {db_status} | {action}")
+        transcribed = has_txt and has_jsonl
+        if transcribed and db_status == "done":
+            label = "safe to delete"
+            deletable_size += size_mb
+        elif transcribed:
+            label = f"transcribed but db={db_status}"
+        else:
+            claimed = f", claimed by {claimed_by}" if claimed_by else ""
+            label = f"not transcribed, db={db_status}{claimed}"
+
+        by_status.setdefault(label, []).append(talk_id)
+
+    print(f"{len(mp3s)} MP3s on disk ({total_size:.0f} MB total)\n")
+    for label, ids in sorted(by_status.items(), key=lambda x: -len(x[1])):
+        print(f"  {label}: {len(ids)} ({', '.join(ids[:5])}{'...' if len(ids) > 5 else ''})")
+    print(f"\n{deletable_size:.0f} MB safe to delete")
+
+
+def cleanup(device: str = "auto") -> None:
+    """Transcribe any leftover MP3s/WAVs on disk whose talk exists in DB, then delete them."""
+    project_dir = Path(__file__).parent
+    audio_files = sorted(project_dir.glob("*.mp3")) + sorted(project_dir.glob("*.wav"))
+    if not audio_files:
+        print("No local audio files found.")
+        return
+
+    engine = get_engine()
+    Base.metadata.create_all(engine)
+    Session = get_session(engine)
+
+    # Filter to files with a matching DB row
+    to_process = []
+    for audio in audio_files:
+        talk_id = audio.stem.split("_chunk")[0]  # ignore chunk suffixes
+        try:
+            with Session() as session:
+                row = session.get(Talk, int(talk_id))
+                if row:
+                    to_process.append((audio, talk_id))
+        except (ValueError, Exception):
+            continue
+
+    if not to_process:
+        print("No audio files with matching DB rows.")
+        return
+
+    print(f"CLEANUP | {len(to_process)} audio files to process")
+    model, backend = load_model(device)
+    print(f"MODEL | Ready (backend={backend})")
+
+    for audio_path, talk_id in to_process:
+        print(f"TRANSCRIBE | talk_id={talk_id} | {audio_path.name} | Starting...")
+        try:
+            transcribe_file(model, audio_path, talk_id, backend)
+            with Session() as session:
+                mark_done(session, int(talk_id))
+            audio_path.unlink()
+            print(f"DONE | talk_id={talk_id} | Transcribed and deleted {audio_path.name}")
+        except Exception as e:
+            print(f"ERROR | talk_id={talk_id} | {type(e).__name__}: {e}")
 
 
 def main() -> None:
@@ -837,6 +901,10 @@ def main() -> None:
 
     sub.add_parser("cleanup-dry", help="Check local MP3s against transcripts and DB status")
 
+    cleanup_p = sub.add_parser("cleanup", help="Transcribe leftover MP3s/WAVs on disk, then delete them")
+    cleanup_p.add_argument("--device", choices=["mlx", "cuda", "auto"], default="auto",
+                           help="Compute backend: mlx (Apple Silicon), cuda (NVIDIA GPU), auto (detect)")
+
     migrate_p = sub.add_parser("migrate", help="One-time CSV import into Postgres")
     migrate_p.add_argument("--csv", default="talks.csv", help="Path to talks.csv")
     migrate_p.add_argument("--transcripts", default="transcripts", help="Path to transcripts directory")
@@ -845,6 +913,8 @@ def main() -> None:
 
     if args.command == "cleanup-dry":
         cleanup_dry()
+    elif args.command == "cleanup":
+        cleanup(device=args.device)
     elif args.command == "run":
         run(device=args.device)
     elif args.command == "work":
