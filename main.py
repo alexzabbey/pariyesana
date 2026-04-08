@@ -358,8 +358,6 @@ def load_model(device: str) -> tuple:
     if device == "cuda":
         import torch
         import nemo.collections.asr as nemo_asr
-        # Disable expandable segments to avoid CUDACachingAllocator assert failures
-        torch.cuda.memory._set_allocator_settings("expandable_segments:False")
         model = nemo_asr.models.ASRModel.from_pretrained("nvidia/parakeet-tdt-0.6b-v3")
         model.eval()
         model.cuda()
@@ -416,7 +414,6 @@ def _split_wav_chunks(wav_path: str) -> list[tuple[str, float]]:
 
 def _transcribe_cuda(model, audio: str) -> tuple[str, list[dict] | None]:
     """Transcribe a single audio file with NeMo on CUDA."""
-    import gc
     import torch
     with torch.cuda.amp.autocast():
         hypotheses = model.transcribe([audio], batch_size=1, timestamps=True)
@@ -428,12 +425,10 @@ def _transcribe_cuda(model, audio: str) -> tuple[str, list[dict] | None]:
             {"text": s["segment"].strip(), "start": round(s["start"], 2), "end": round(s["end"], 2)}
             for s in hyp.timestamp["segment"]
         ]
-    del hypotheses, hyp
-    gc.collect()
     return full_text, segments
 
 
-def transcribe_file(model, audio_path: Path, talk_id: str, backend: str = "mlx", split: bool = False) -> None:
+def transcribe_file(model, audio_path: Path, talk_id: str, backend: str = "mlx") -> None:
     OUTPUT_DIR.mkdir(exist_ok=True)
     source = audio_path.name
 
@@ -452,7 +447,7 @@ def transcribe_file(model, audio_path: Path, talk_id: str, backend: str = "mlx",
                     for s in result.sentences
                 ]
         else:
-            chunks = _split_wav_chunks(audio) if split else [(audio, 0.0)]
+            chunks = _split_wav_chunks(audio)
             all_segments = []
             all_text = []
             chunk_paths_to_clean = []
@@ -565,7 +560,7 @@ def _peek_next_pending(Session):
         ).scalar_one_or_none()
 
 
-def run(device: str = "auto", split: bool = False) -> None:
+def run(device: str = "auto") -> None:
     """Scrape and transcribe talks one by one, oldest first. Resumable."""
     engine = get_engine()
     Base.metadata.create_all(engine)
@@ -634,7 +629,7 @@ def run(device: str = "auto", split: bool = False) -> None:
 
         with Session() as session:
             worker_heartbeat(session, worker_id, status="processing", current_talk_id=talk.talk_id)
-        _process_talk(talk, model, backend, client, prefetch_client, Session, worker_id, split=split)
+        _process_talk(talk, model, backend, client, prefetch_client, Session, worker_id)
 
     client.close()
     prefetch_client.close()
@@ -650,7 +645,7 @@ def run(device: str = "auto", split: bool = False) -> None:
 
 # --- Main: work (transcribe-only, extra worker machines) ---
 
-def work(device: str = "auto", split: bool = False) -> None:
+def work(device: str = "auto") -> None:
     """Claim and transcribe pending talks. Run on extra worker machines."""
     engine = get_engine()
     Base.metadata.create_all(engine)
@@ -682,7 +677,7 @@ def work(device: str = "auto", split: bool = False) -> None:
 
         with Session() as session:
             worker_heartbeat(session, worker_id, status="processing", current_talk_id=talk.talk_id)
-        _process_talk(talk, model, backend, client, prefetch_client, Session, worker_id, split=split)
+        _process_talk(talk, model, backend, client, prefetch_client, Session, worker_id)
 
 
 # --- Shared transcription logic ---
@@ -690,7 +685,7 @@ def work(device: str = "auto", split: bool = False) -> None:
 _error_counts: dict[int, int] = {}
 
 
-def _process_talk(talk, model, backend, client, prefetch_client, Session, worker_id: str | None = None, split: bool = False) -> None:
+def _process_talk(talk, model, backend, client, prefetch_client, Session, worker_id: str | None = None) -> None:
     """Download, transcribe, and mark done a single claimed talk."""
     talk_id = str(talk.talk_id)
     title = talk.title
@@ -761,7 +756,7 @@ def _process_talk(talk, model, backend, client, prefetch_client, Session, worker
             print(f"RESUME | talk_id={talk_id} | MP3 on disk ({size_mb:.1f} MB), skipping download")
 
         print(f"TRANSCRIBE | talk_id={talk_id} | \"{title}\" by {teacher} | Starting...")
-        transcribe_file(model, mp3_path, talk_id, backend, split=split)
+        transcribe_file(model, mp3_path, talk_id, backend)
         print(f"TRANSCRIBE | talk_id={talk_id} | Complete")
 
         mp3_path.unlink()
@@ -792,6 +787,37 @@ def _process_talk(talk, model, backend, client, prefetch_client, Session, worker
 
 # --- CLI ---
 
+def cleanup_dry() -> None:
+    """Report status of local MP3 files against transcripts and DB."""
+    project_dir = Path(__file__).parent
+    mp3s = sorted(project_dir.glob("*.mp3"))
+    if not mp3s:
+        print("No local MP3 files found.")
+        return
+
+    engine = get_engine()
+    Session = get_session(engine)
+
+    for mp3 in mp3s:
+        talk_id = mp3.stem
+        size_mb = mp3.stat().st_size / 1024 / 1024
+        has_txt = (OUTPUT_DIR / f"{talk_id}.txt").exists()
+        has_jsonl = (OUTPUT_DIR / f"{talk_id}.jsonl").exists()
+
+        db_status = "not found"
+        try:
+            with Session() as session:
+                row = session.get(Talk, int(talk_id))
+                if row:
+                    db_status = row.status
+        except (ValueError, Exception):
+            pass
+
+        transcript = "txt+jsonl" if has_txt and has_jsonl else "txt" if has_txt else "jsonl" if has_jsonl else "none"
+        action = "safe to delete" if has_txt and has_jsonl and db_status == "done" else "keep"
+        print(f"{mp3.name} ({size_mb:.1f} MB) | transcripts: {transcript} | db: {db_status} | {action}")
+
+
 def main() -> None:
     import argparse
 
@@ -801,17 +827,15 @@ def main() -> None:
     run_p = sub.add_parser("run", help="Scrape and transcribe (primary machine)")
     run_p.add_argument("--device", choices=["mlx", "cuda", "auto"], default="auto",
                        help="Compute backend: mlx (Apple Silicon), cuda (NVIDIA GPU), auto (detect)")
-    run_p.add_argument("--split", action="store_true",
-                       help="Split long audio into chunks before transcribing (reduces VRAM usage)")
 
     work_p = sub.add_parser("work", help="Transcribe-only worker (extra machines)")
     work_p.add_argument("--device", choices=["mlx", "cuda", "auto"], default="auto",
                         help="Compute backend: mlx (Apple Silicon), cuda (NVIDIA GPU), auto (detect)")
-    work_p.add_argument("--split", action="store_true",
-                       help="Split long audio into chunks before transcribing (reduces VRAM usage)")
 
     html_p = sub.add_parser("html", help="Generate chat HTML for a talk")
     html_p.add_argument("talk_id", help="Talk ID to generate HTML for")
+
+    sub.add_parser("cleanup-dry", help="Check local MP3s against transcripts and DB status")
 
     migrate_p = sub.add_parser("migrate", help="One-time CSV import into Postgres")
     migrate_p.add_argument("--csv", default="talks.csv", help="Path to talks.csv")
@@ -819,10 +843,12 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    if args.command == "run":
-        run(device=args.device, split=args.split)
+    if args.command == "cleanup-dry":
+        cleanup_dry()
+    elif args.command == "run":
+        run(device=args.device)
     elif args.command == "work":
-        work(device=args.device, split=args.split)
+        work(device=args.device)
     elif args.command == "html":
         talk_id = args.talk_id
         jsonl_path = OUTPUT_DIR / f"{talk_id}.jsonl"
