@@ -17,6 +17,7 @@ from bs4 import BeautifulSoup
 
 from pariyesana_db import (
     Base,
+    Talk,
     claim_next_talk,
     claim_talk,
     get_engine,
@@ -33,7 +34,7 @@ OUTPUT_DIR = Path(__file__).parent / "transcripts"
 DELAY_BETWEEN_TALKS = 10
 WORKER_POLL_INTERVAL = 30
 DELAY_BETWEEN_PAGES = 3  # seconds between scraping requests
-MAX_RETRIES = 5
+MAX_RETRIES = 3
 INITIAL_BACKOFF = 5  # seconds, doubles each retry
 
 # Languages Parakeet can handle (European)
@@ -422,8 +423,8 @@ def transcribe_file(model, audio_path: Path, talk_id: str, backend: str = "mlx",
     OUTPUT_DIR.mkdir(exist_ok=True)
     source = audio_path.name
 
-    # Convert to WAV for NeMo/CUDA — Lhotse chokes on some MP3 headers
-    wav_audio, wav_tmp = _ensure_wav(audio_path) if backend == "cuda" else (str(audio_path), None)
+    # Convert to WAV — libsndfile (MLX) and Lhotse (CUDA) choke on some MP3s
+    wav_audio, wav_tmp = _ensure_wav(audio_path)
     audio = wav_audio
 
     try:
@@ -674,12 +675,19 @@ def work(device: str = "auto", split: bool = False) -> None:
 
 # --- Shared transcription logic ---
 
+_error_counts: dict[int, int] = {}
+
+
 def _process_talk(talk, model, backend, client, prefetch_client, Session, worker_id: str | None = None, split: bool = False) -> None:
     """Download, transcribe, and mark done a single claimed talk."""
     talk_id = str(talk.talk_id)
     title = talk.title
     teacher = talk.teacher
     mp3_url = talk.mp3_url
+
+    if _error_counts.get(talk.talk_id, 0) >= MAX_RETRIES:
+        print(f"SKIP | talk_id={talk_id} | \"{title}\" by {teacher} | Failed {MAX_RETRIES} times this session")
+        return
 
     if not mp3_url:
         with Session() as session:
@@ -755,10 +763,11 @@ def _process_talk(talk, model, backend, client, prefetch_client, Session, worker
         print(f"DONE | talk_id={talk_id} | \"{title}\" by {teacher}")
 
     except Exception as e:
-        print(f"ERROR | talk_id={talk_id} | \"{title}\" by {teacher} | {type(e).__name__}: {e}")
+        _error_counts[talk.talk_id] = _error_counts.get(talk.talk_id, 0) + 1
+        count = _error_counts[talk.talk_id]
+        print(f"ERROR | talk_id={talk_id} | \"{title}\" by {teacher} | {type(e).__name__}: {e} (attempt {count}/{MAX_RETRIES})")
         if mp3_path.exists():
             mp3_path.unlink()
-            print(f"CLEANUP | talk_id={talk_id} | Deleted MP3 (will retry)")
         with Session() as session:
             mark_error(session, talk.talk_id)
         wid = worker_id or talk.claimed_by or "unknown"
