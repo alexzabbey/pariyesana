@@ -11,7 +11,7 @@ RUN bun run build
 FROM oven/bun:slim
 WORKDIR /app
 
-RUN adduser --system --uid 1001 sveltekit
+RUN echo "sveltekit:x:1001:1001::/home/sveltekit:/bin/sh" >> /etc/passwd
 COPY --from=build --chown=sveltekit:sveltekit /app/build build/
 COPY --from=build --chown=sveltekit:sveltekit /app/package.json .
 COPY --from=build --chown=sveltekit:sveltekit /app/node_modules node_modules/
