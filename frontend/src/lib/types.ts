@@ -54,6 +54,7 @@ export interface WorkerInfo {
 	last_heartbeat: string;
 	started_at: string;
 	talks_completed: number;
+	total_audio_secs: number;
 }
 
 export interface RecentTalk {

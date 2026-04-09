@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select, text
+from sqlalchemy import cast, select, text, Integer
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -87,11 +87,10 @@ def claim_next_talk(session: Session, worker_id: str) -> Talk | None:
 
 
 def mark_done(session: Session, talk_id: int) -> None:
-    """Mark a talk as successfully transcribed."""
+    """Mark a talk as successfully transcribed. Keeps claimed_by for attribution."""
     row = session.get(Talk, talk_id)
     if row:
         row.status = "done"
-        row.claimed_by = None
         row.claimed_at = None
         session.commit()
 
@@ -164,6 +163,27 @@ def get_dashboard_stats(session: Session) -> dict:
         .where(Worker.last_heartbeat >= cutoff)
         .order_by(Worker.started_at)
     ).scalars().all()
+
+    # Sum audio duration per worker from completed talks
+    audio_rows = session.execute(text("""
+        SELECT claimed_by, SUM(
+            CASE
+                WHEN duration ~ '^\\d+:\\d+:\\d+$' THEN
+                    split_part(duration, ':', 1)::int * 3600
+                    + split_part(duration, ':', 2)::int * 60
+                    + split_part(duration, ':', 3)::int
+                WHEN duration ~ '^\\d+:\\d+$' THEN
+                    split_part(duration, ':', 1)::int * 60
+                    + split_part(duration, ':', 2)::int
+                ELSE 0
+            END
+        ) AS total_secs
+        FROM talks
+        WHERE status = 'done' AND claimed_by IS NOT NULL
+        GROUP BY claimed_by
+    """)).all()
+    audio_by_worker = {row[0]: row[1] for row in audio_rows}
+
     workers = [
         {
             "worker_id": w.worker_id,
@@ -172,6 +192,7 @@ def get_dashboard_stats(session: Session) -> dict:
             "last_heartbeat": w.last_heartbeat.isoformat(),
             "started_at": w.started_at.isoformat(),
             "talks_completed": w.talks_completed,
+            "total_audio_secs": audio_by_worker.get(w.worker_id, 0),
         }
         for w in recent_workers
     ]

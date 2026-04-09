@@ -80,6 +80,7 @@ class WorkerInfo(BaseModel):
     last_heartbeat: str
     started_at: str
     talks_completed: int
+    total_audio_secs: int
 
 
 class RecentTalk(BaseModel):

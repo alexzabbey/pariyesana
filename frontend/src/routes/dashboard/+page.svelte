@@ -74,6 +74,15 @@
     function isWorkerActive(iso: string): boolean {
         return Date.now() - new Date(iso).getTime() < 2 * 60 * 1000;
     }
+
+    function transcriptionRate(worker: DashboardResponse["workers"][number]): string {
+        const uptimeSecs = (Date.now() - new Date(worker.started_at).getTime()) / 1000;
+        if (uptimeSecs <= 0 || worker.total_audio_secs <= 0) return "—";
+        const audioMins = worker.total_audio_secs / 60;
+        const uptimeMins = uptimeSecs / 60;
+        const rate = audioMins / uptimeMins;
+        return `${rate.toFixed(1)} audio min/uptime min`;
+    }
 </script>
 
 <svelte:head>
@@ -182,6 +191,8 @@
                                             <span>{worker.talks_completed} done</span>
                                             <span class="text-border">&middot;</span>
                                             <span>up {uptime(worker.started_at)}</span>
+                                            <span class="text-border">&middot;</span>
+                                            <span>{transcriptionRate(worker)}</span>
                                             {#if !active}
                                                 <span class="text-border">&middot;</span>
                                                 <span>{timeAgo(worker.last_heartbeat)}</span>
