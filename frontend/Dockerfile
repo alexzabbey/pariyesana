@@ -1,20 +1,22 @@
-FROM node:22-slim AS build
-
-RUN corepack enable && corepack prepare pnpm@latest --activate
+FROM oven/bun:slim AS build
 
 WORKDIR /app
-COPY package.json .
-RUN pnpm install
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile
 
 COPY . .
-RUN pnpm build
+RUN bun run svelte-kit sync
+RUN bun run build
 
-FROM node:22-slim
+FROM oven/bun:slim
 WORKDIR /app
-COPY --from=build /app/build build/
-COPY --from=build /app/package.json .
-COPY --from=build /app/node_modules node_modules/
 
+RUN adduser --system --uid 1001 sveltekit
+COPY --from=build --chown=sveltekit:sveltekit /app/build build/
+COPY --from=build --chown=sveltekit:sveltekit /app/package.json .
+COPY --from=build --chown=sveltekit:sveltekit /app/node_modules node_modules/
+
+USER sveltekit
 ENV PORT=3000
 EXPOSE 3000
-CMD ["node", "build"]
+CMD ["bun", "build/index.js"]
