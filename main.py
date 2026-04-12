@@ -29,6 +29,9 @@ from pariyesana_db import (
     worker_heartbeat,
 )
 
+SSH_TUNNEL_HOST = "oci-pariyesana"
+DB_PORT = 5432
+
 BASE_URL = "https://dharmaseed.org"
 OUTPUT_DIR = Path(__file__).parent / "transcripts"
 DELAY_BETWEEN_TALKS = 10
@@ -48,6 +51,41 @@ SKIP_LANGUAGES = {
     3: "Thai", 8: "Burmese", 9: "Tibetan",
     10: "Vietnamese", 12: "Mandarin", 14: "Hebrew",
 }
+
+
+# --- SSH tunnel ---
+
+def ensure_tunnel() -> None:
+    """Start an SSH tunnel to the DB if port 5432 isn't already reachable."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.settimeout(1)
+        sock.connect(("localhost", DB_PORT))
+        print(f"TUNNEL | localhost:{DB_PORT} already open")
+        return
+    except OSError:
+        pass
+    finally:
+        sock.close()
+
+    print(f"TUNNEL | Opening SSH tunnel to {SSH_TUNNEL_HOST}:{DB_PORT}...")
+    subprocess.run(
+        ["ssh", "-f", "-N", "-L", f"{DB_PORT}:localhost:{DB_PORT}", SSH_TUNNEL_HOST],
+        check=True,
+    )
+    # Wait for tunnel to be ready
+    for _ in range(10):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s.settimeout(1)
+            s.connect(("localhost", DB_PORT))
+            print("TUNNEL | Ready")
+            return
+        except OSError:
+            time.sleep(0.5)
+        finally:
+            s.close()
+    raise RuntimeError("TUNNEL | Failed to establish SSH tunnel")
 
 
 # --- HTTP helpers ---
@@ -933,6 +971,10 @@ def main() -> None:
     sub.add_parser("upload", help="Backfill-upload all local JSONLs to server")
 
     args = parser.parse_args()
+
+    db_commands = {"run", "work", "cleanup-dry", "cleanup", "html", "migrate"}
+    if args.command in db_commands:
+        ensure_tunnel()
 
     if args.command == "cleanup-dry":
         cleanup_dry()
