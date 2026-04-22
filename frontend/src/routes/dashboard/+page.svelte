@@ -10,6 +10,8 @@
     let error = $state("");
     let lastUpdated = $state<Date | null>(null);
 
+    const MAX_TALKS = 46260;
+
     const STATUS_ORDER = ["done", "pending", "claimed", "skip_language", "no_mp3", "error"] as const;
 
     const STATUS_META: Record<string, { label: string; variant: "default" | "secondary" | "outline" | "destructive" }> = {
@@ -43,7 +45,7 @@
 
     let doneCount = $derived(data?.status_counts["done"] ?? 0);
     let totalTranscribable = $derived(
-        (data?.total ?? 0) -
+        MAX_TALKS -
             (data?.status_counts["skip_language"] ?? 0) -
             (data?.status_counts["no_mp3"] ?? 0)
     );
@@ -253,7 +255,7 @@
 
         <!-- Footer -->
         <footer class="mt-4 text-center text-xs text-muted-foreground fade-in" style="animation-delay: 200ms">
-            {data.total.toLocaleString()} talks tracked
+            {data.total.toLocaleString()} / {MAX_TALKS.toLocaleString()} talks tracked
             {#if lastUpdated}
                 &middot; updated {lastUpdated.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
             {/if}
