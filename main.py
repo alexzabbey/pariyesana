@@ -28,9 +28,11 @@ from pariyesana_db import (
     upsert_talks,
     worker_heartbeat,
 )
+from pariyesana_db.tunnel import ensure_tunnel as _ensure_ssh_tunnel
 
 SSH_TUNNEL_HOST = "oci-pariyesana"
 DB_PORT = 5432
+LOCAL_DB_PORT = 5433  # local side of the tunnel; 5433 avoids clash with local Postgres on 5432
 
 BASE_URL = "https://dharmaseed.org"
 OUTPUT_DIR = Path(__file__).parent / "transcripts"
@@ -56,36 +58,19 @@ SKIP_LANGUAGES = {
 # --- SSH tunnel ---
 
 def ensure_tunnel() -> None:
-    """Start an SSH tunnel to the DB if port 5432 isn't already reachable."""
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        sock.settimeout(1)
-        sock.connect(("localhost", DB_PORT))
-        print(f"TUNNEL | localhost:{DB_PORT} already open")
-        return
-    except OSError:
-        pass
-    finally:
-        sock.close()
+    """Open SSH tunnel to Postgres and set DATABASE_URL."""
+    _ensure_ssh_tunnel(SSH_TUNNEL_HOST, [(LOCAL_DB_PORT, DB_PORT)])
+    _set_database_url()
 
-    print(f"TUNNEL | Opening SSH tunnel to {SSH_TUNNEL_HOST}:{DB_PORT}...")
-    subprocess.run(
-        ["ssh", "-f", "-N", "-L", f"{DB_PORT}:localhost:{DB_PORT}", SSH_TUNNEL_HOST],
-        check=True,
+
+def _set_database_url() -> None:
+    """Point DATABASE_URL at the tunnel unless the user already set one."""
+    if os.environ.get("DATABASE_URL"):
+        return
+    pw = os.environ.get("PG_PASSWORD", "pariyesana")
+    os.environ["DATABASE_URL"] = (
+        f"postgresql+psycopg://pariyesana:{pw}@localhost:{LOCAL_DB_PORT}/pariyesana"
     )
-    # Wait for tunnel to be ready
-    for _ in range(10):
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            s.settimeout(1)
-            s.connect(("localhost", DB_PORT))
-            print("TUNNEL | Ready")
-            return
-        except OSError:
-            time.sleep(0.5)
-        finally:
-            s.close()
-    raise RuntimeError("TUNNEL | Failed to establish SSH tunnel")
 
 
 # --- HTTP helpers ---
@@ -940,6 +925,16 @@ def cleanup(device: str = "auto") -> None:
             print(f"ERROR | talk_id={talk_id} | {type(e).__name__}: {e}")
 
 
+def ingest_cli() -> None:
+    """Forward to backend/scripts/ingest.py in the backend env."""
+    import sys
+    backend = Path(__file__).parent / "backend"
+    sys.exit(subprocess.call(
+        ["uv", "run", "python", "-m", "scripts.ingest", *sys.argv[1:]],
+        cwd=str(backend),
+    ))
+
+
 def main() -> None:
     import argparse
 
@@ -967,7 +962,6 @@ def main() -> None:
     migrate_p.add_argument("--csv", default="talks.csv", help="Path to talks.csv")
     migrate_p.add_argument("--transcripts", default="transcripts", help="Path to transcripts directory")
 
-    sub.add_parser("sync", help="Pull all transcripts from server via rsync")
     sub.add_parser("upload", help="Backfill-upload all local JSONLs to server")
 
     args = parser.parse_args()
@@ -1007,15 +1001,6 @@ def main() -> None:
             pass
         html_path = OUTPUT_DIR / f"{talk_id}.html"
         generate_chat_html(segments, title, html_path)
-    elif args.command == "sync":
-        print("SYNC | Pulling transcripts from server...")
-        result = subprocess.run(
-            ["rsync", "-az", "--progress", "oci-pariyesana:~/pariyesana/transcripts/", str(OUTPUT_DIR) + "/"],
-        )
-        if result.returncode == 0:
-            print("SYNC | Complete")
-        else:
-            print(f"SYNC | Failed (exit code {result.returncode})")
     elif args.command == "upload":
         jsonls = sorted(OUTPUT_DIR.glob("*.jsonl"))
         print(f"UPLOAD | Uploading {len(jsonls)} JSONLs to server...")
