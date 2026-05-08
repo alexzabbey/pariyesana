@@ -1,4 +1,4 @@
-:80 {
+{$DOMAIN} {
 	handle /api/* {
 		reverse_proxy backend:8000
 	}
