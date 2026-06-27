@@ -110,7 +110,8 @@ def _rsync_batch(filenames: list[str], transcripts_dir: str) -> list[str]:
     dest.mkdir(parents=True, exist_ok=True)
     before_existed = {f for f in filenames if (dest / f).exists()}
 
-    remote = f"{SSH_TUNNEL_HOST}:{REMOTE_TRANSCRIPTS_PATH}"
+    # --files-from doesn't shell-expand a remote '~'; use a home-relative path instead
+    remote = f"{SSH_TUNNEL_HOST}:{REMOTE_TRANSCRIPTS_PATH.removeprefix('~/')}"
     proc = subprocess.run(
         ["rsync", "-az", "--files-from=-", remote, str(dest) + "/"],
         input="\n".join(filenames) + "\n",
