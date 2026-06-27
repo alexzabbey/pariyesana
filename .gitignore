@@ -28,6 +28,9 @@ talks*.csv
 # Qdrant persistent storage
 qdrant_storage/
 
+# Logs
+logs/
+
 # Environment
 .env
 .DS_Store

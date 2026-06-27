@@ -117,43 +117,25 @@ def _read_and_chunk_talk(talk_id: int, jsonl_path: Path) -> list[dict]:
     return chunks
 
 
-def run_ingestion(
-    database_url: str,
+def index_talks(
+    talks,
     transcripts_dir: str,
     embed_batch_size: int = 256,
     upsert_batch_size: int = 100,
-    full: bool = False,
-) -> None:
-    """Run ingestion pipeline. By default only indexes new talks (incremental)."""
+) -> tuple[int, int]:
+    """Chunk + embed + upsert a specific list of Talk objects whose JSONLs are on disk.
+
+    Returns (talks_indexed, passages_upserted). Talks missing a JSONL are skipped silently.
+    """
     assert search_service.client is not None
 
-    engine = get_engine(database_url)
-    Session = get_session(engine)
-    with Session() as session:
-        all_talks = get_all_talks(session)
-
     transcripts = Path(transcripts_dir)
-    transcribed = {
-        t.talk_id: t for t in all_talks if t.status == "done"
-    }
-    logger.info("Found %d transcribed talks in DB", len(transcribed))
-
-    if not full:
-        existing_ids = search_service.get_indexed_talk_ids()
-        before = len(transcribed)
-        transcribed = {tid: t for tid, t in transcribed.items() if tid not in existing_ids}
-        logger.info("Incremental mode: %d already indexed, %d new to process", before - len(transcribed), len(transcribed))
-        if not transcribed:
-            logger.info("Nothing new to ingest")
-            return
-
-    # Phase 1: Read and chunk all talks
-    logger.info("Chunking transcripts...")
     all_chunks: list[dict] = []
     meta_by_id: dict[int, dict] = {}
     skipped = 0
 
-    for talk_id, talk in transcribed.items():
+    for talk in talks:
+        talk_id = talk.talk_id
         jsonl_path = transcripts / f"{talk_id}.jsonl"
         if not jsonl_path.exists():
             skipped += 1
@@ -171,15 +153,13 @@ def run_ingestion(
     logger.info("Chunked %d talks into %d passages (%d skipped, no JSONL)", len(meta_by_id), len(all_chunks), skipped)
 
     if not all_chunks:
-        return
+        return 0, 0
 
-    # Phase 2: Embed all chunks in large batches
     logger.info("Embedding %d passages (batch_size=%d)...", len(all_chunks), embed_batch_size)
     all_texts = [c["text"] for c in all_chunks]
     all_vectors = embedding_service.embed_documents(all_texts, batch_size=embed_batch_size)
     logger.info("Embedding complete")
 
-    # Phase 3: Build points and upsert
     logger.info("Upserting to Qdrant...")
     points: list[models.PointStruct] = []
     for chunk, vec in zip(all_chunks, all_vectors):
@@ -215,4 +195,52 @@ def run_ingestion(
         if (i // upsert_batch_size) % 10 == 0:
             logger.info("Upserted %d/%d points", min(i + upsert_batch_size, len(points)), len(points))
 
-    logger.info("Ingestion complete: %d talks, %d passages", len(meta_by_id), len(points))
+    return len(meta_by_id), len(points)
+
+
+def select_target_talks(database_url: str, full: bool) -> list:
+    """Return the list of Talk objects to ingest, ordered by talk_id.
+
+    full=True  -> every talk with status='done'.
+    full=False -> every talk with status='done' not already indexed in Qdrant.
+    """
+    assert search_service.client is not None
+
+    engine = get_engine(database_url)
+    Session = get_session(engine)
+    with Session() as session:
+        all_talks = get_all_talks(session)
+
+    transcribed = [t for t in all_talks if t.status == "done"]
+    logger.info("Found %d transcribed talks in DB", len(transcribed))
+
+    if full:
+        return sorted(transcribed, key=lambda t: t.talk_id)
+
+    existing_ids = search_service.get_indexed_talk_ids()
+    new_talks = [t for t in transcribed if t.talk_id not in existing_ids]
+    logger.info(
+        "Incremental mode: %d already indexed, %d new to process",
+        len(transcribed) - len(new_talks),
+        len(new_talks),
+    )
+    return sorted(new_talks, key=lambda t: t.talk_id)
+
+
+def run_ingestion(
+    database_url: str,
+    transcripts_dir: str,
+    embed_batch_size: int = 256,
+    upsert_batch_size: int = 100,
+    full: bool = False,
+) -> None:
+    """Run ingestion pipeline against already-local JSONLs (no remote sync)."""
+    targets = select_target_talks(database_url, full=full)
+    if not targets:
+        logger.info("Nothing to ingest")
+        return
+
+    talks_indexed, points = index_talks(
+        targets, transcripts_dir, embed_batch_size, upsert_batch_size
+    )
+    logger.info("Ingestion complete: %d talks, %d passages", talks_indexed, points)

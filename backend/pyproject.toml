@@ -41,4 +41,10 @@ explicit = true
 
 [tool.uv.sources]
 pariyesana-db = { path = "../db", editable = true }
-torch = [{ index = "pytorch-cpu" }]
+# torch resolution:
+#   linux + aarch64 (OCI ARM deploy) -> CPU build from pytorch-cpu index
+#   linux + x86_64 (WSL workstation) -> default PyPI wheel (CUDA build)
+#   darwin (mac laptop)              -> default PyPI wheel (MPS build)
+torch = [
+    { index = "pytorch-cpu", marker = "platform_machine == 'aarch64'" },
+]
