@@ -113,7 +113,8 @@ def _rsync_batch(filenames: list[str], transcripts_dir: str) -> list[str]:
     # --files-from doesn't shell-expand a remote '~'; use a home-relative path instead
     remote = f"{SSH_TUNNEL_HOST}:{REMOTE_TRANSCRIPTS_PATH.removeprefix('~/')}"
     proc = subprocess.run(
-        ["rsync", "-az", "--files-from=-", remote, str(dest) + "/"],
+        # --ignore-missing-args: some 'done' talks have no remote JSONL; skip them, don't fail the batch
+        ["rsync", "-az", "--ignore-missing-args", "--files-from=-", remote, str(dest) + "/"],
         input="\n".join(filenames) + "\n",
         text=True,
         capture_output=True,
