@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://pariyesana:pariyesana@localhost:5432/pariyesana"
     transcripts_dir: str = "../transcripts"
     embedding_model: str = "google/EmbeddingGemma-300M"
+    embedding_device: str = ""  # "" = auto-detect; set "cuda"/"cpu"/"mps" to force
     vector_size: int = 768
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]
 

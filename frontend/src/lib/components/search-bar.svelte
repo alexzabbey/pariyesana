@@ -124,7 +124,7 @@
             type="text"
             bind:value={query}
             onkeydown={handleKeydown}
-            placeholder="Search the dharma..."
+            placeholder="Search dharma talks..."
             class="flex-1 h-11 !text-base"
         />
         <Button

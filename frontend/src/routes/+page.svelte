@@ -5,6 +5,7 @@
     import SearchBar from "$lib/components/search-bar.svelte";
     import SearchResultCard from "$lib/components/search-result-card.svelte";
     import LotusLoader from "$lib/components/lotus-loader.svelte";
+    import FeedbackDialog from "$lib/components/feedback-dialog.svelte";
 
     let query = $state("");
     let results = $state<TalkSearchResult[]>([]);
@@ -51,9 +52,7 @@
         "karma and intention",
     ];
 
-    const examples = allExamples
-        .sort(() => Math.random() - 0.5)
-        .slice(0, 7);
+    const examples = allExamples.sort(() => Math.random() - 0.5).slice(0, 7);
 
     async function doSearch(q?: string) {
         const searchQuery = q ?? query;
@@ -92,7 +91,7 @@
 </script>
 
 <svelte:head>
-    <title>Pariyesan&#x101; &mdash; Search the Dharma</title>
+    <title>Pariyesan&#x101;: Search Dharma Talks</title>
 </svelte:head>
 
 <main
@@ -100,9 +99,7 @@
     class:landed={!hasSearched}
     class:docked={hasSearched}
 >
-    <div
-        class="search-container mx-auto w-full max-w-[600px]"
-    >
+    <div class="search-container mx-auto w-full max-w-[600px]">
         <!-- Header -->
         <header class="search-header text-center">
             <button
@@ -161,7 +158,9 @@
             {:else if loading}
                 <div class="flex flex-col items-center gap-3 py-16">
                     <LotusLoader size={56} />
-                    <span class="text-sm text-muted-foreground">Searching...</span>
+                    <span class="text-sm text-muted-foreground"
+                        >Searching...</span
+                    >
                 </div>
             {:else if hasSearched && results.length === 0}
                 <div class="py-12 text-center text-muted-foreground">
@@ -170,7 +169,10 @@
             {:else}
                 <div class="flex flex-col gap-4">
                     {#each results as r, i (r.talk_id)}
-                        <div class="result-item" style="animation-delay: {i * 60}ms">
+                        <div
+                            class="result-item"
+                            style="animation-delay: {i * 60}ms"
+                        >
                             <SearchResultCard result={r} />
                         </div>
                     {/each}
@@ -178,6 +180,8 @@
             {/if}
         </div>
     </div>
+
+    <FeedbackDialog />
 </main>
 
 <style>

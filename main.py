@@ -32,7 +32,7 @@ from pariyesana_db.tunnel import ensure_tunnel as _ensure_ssh_tunnel
 
 SSH_TUNNEL_HOST = "oci-pariyesana"
 DB_PORT = 5432
-LOCAL_DB_PORT = 5433  # local side of the tunnel; 5433 avoids clash with local Postgres on 5432
+LOCAL_DB_PORT = 5434  # local side of the tunnel; 5434 avoids clash with spool-postgres on 5433
 
 BASE_URL = "https://dharmaseed.org"
 OUTPUT_DIR = Path(__file__).parent / "transcripts"

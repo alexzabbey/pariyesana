@@ -19,7 +19,7 @@ from pariyesana_db.tunnel import ensure_tunnel
 
 SSH_TUNNEL_HOST = "oci-pariyesana"
 REMOTE_TRANSCRIPTS_PATH = "~/pariyesana/transcripts/"
-LOCAL_PG_PORT = 5433   # avoid clash with local Postgres on 5432
+LOCAL_PG_PORT = 55432  # namespaced high port: 5433 collides with other local PG containers (e.g. Spool)
 REMOTE_PG_PORT = 5432
 LOCAL_QDRANT_PORT = 6334  # avoid clash with local Qdrant on 6333
 REMOTE_QDRANT_PORT = 6333
@@ -113,13 +113,15 @@ def _rsync_batch(filenames: list[str], transcripts_dir: str) -> list[str]:
     # --files-from doesn't shell-expand a remote '~'; use a home-relative path instead
     remote = f"{SSH_TUNNEL_HOST}:{REMOTE_TRANSCRIPTS_PATH.removeprefix('~/')}"
     proc = subprocess.run(
-        # --ignore-missing-args: some 'done' talks have no remote JSONL; skip them, don't fail the batch
-        ["rsync", "-az", "--ignore-missing-args", "--files-from=-", remote, str(dest) + "/"],
+        # macOS rsync (2.6.9/openrsync) lacks --ignore-missing-args; instead tolerate exit 23
+        # (partial transfer). Some 'done' talks have no remote JSONL; the post-check below
+        # filters to files that actually landed, so a missing source is harmless.
+        ["rsync", "-az", "--files-from=-", remote, str(dest) + "/"],
         input="\n".join(filenames) + "\n",
         text=True,
         capture_output=True,
     )
-    if proc.returncode != 0:
+    if proc.returncode not in (0, 23):
         raise RuntimeError(f"rsync failed (exit {proc.returncode}): {proc.stderr.strip()}")
 
     return [f for f in filenames if f not in before_existed and (dest / f).exists()]
@@ -182,7 +184,9 @@ def _stream_ingest(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Ingest dharma talk transcripts into Qdrant (via SSH tunnel to OCI)")
     parser.add_argument("--transcripts", default=None, help="Path to transcripts directory")
-    parser.add_argument("--embed-batch-size", type=int, default=256, help="Embedding batch size")
+    # ponytail: 32, not 256 — MPS attention buffer is batch*heads*seq^2*4B; at seq=2048 that's
+    # ~50MB/text, so 256 blows past MPS's per-tensor limit (~10GiB). Raise on CUDA if needed.
+    parser.add_argument("--embed-batch-size", type=int, default=32, help="Embedding batch size")
     parser.add_argument("--upsert-batch-size", type=int, default=100, help="Qdrant upsert batch size")
     parser.add_argument("--full", action="store_true", help="Re-embed and upsert all talks (default: incremental, only new)")
     parser.add_argument("--no-tunnel", action="store_true", help="Skip SSH tunnel setup (use existing DATABASE_URL/QDRANT_URL)")
