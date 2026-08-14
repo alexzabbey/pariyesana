@@ -1,4 +1,13 @@
 {$DOMAIN} {
+	# ponytail: access log lands in the existing caddy_data volume so it
+	# survives redeploys without a new volume; move it out if it ever grows.
+	log {
+		output file /data/access.log {
+			roll_size 10MiB
+			roll_keep 3
+		}
+	}
+
 	handle /api/* {
 		reverse_proxy backend:8000
 	}
