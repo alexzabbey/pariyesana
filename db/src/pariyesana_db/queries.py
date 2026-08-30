@@ -95,14 +95,23 @@ def mark_done(session: Session, talk_id: int) -> None:
         session.commit()
 
 
-def mark_error(session: Session, talk_id: int) -> None:
-    """Release a failed talk back to pending so it can be retried."""
+def mark_error(session: Session, talk_id: int, max_retries: int = 3) -> int:
+    """Count a failure. Back to pending, or terminal "failed" once max_retries is hit.
+
+    Returns the new error_count. The count persists, so talks with dead media
+    (dharmaseed 404s) stop being retried on every restart.
+    # ponytail: no automatic un-failing. To retry them:
+    #   UPDATE talks SET status='pending', error_count=0 WHERE status='failed';
+    """
     row = session.get(Talk, talk_id)
-    if row:
-        row.status = "pending"
-        row.claimed_by = None
-        row.claimed_at = None
-        session.commit()
+    if row is None:
+        return 0
+    row.error_count = (row.error_count or 0) + 1
+    row.status = "failed" if row.error_count >= max_retries else "pending"
+    row.claimed_by = None
+    row.claimed_at = None
+    session.commit()
+    return row.error_count
 
 
 def get_all_talks(session: Session) -> list[Talk]:

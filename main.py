@@ -722,19 +722,12 @@ def work(device: str = "auto") -> None:
 
 # --- Shared transcription logic ---
 
-_error_counts: dict[int, int] = {}
-
-
 def _process_talk(talk, model, backend, client, prefetch_client, Session, worker_id: str | None = None) -> None:
     """Download, transcribe, and mark done a single claimed talk."""
     talk_id = str(talk.talk_id)
     title = talk.title
     teacher = talk.teacher
     mp3_url = talk.mp3_url
-
-    if _error_counts.get(talk.talk_id, 0) >= MAX_RETRIES:
-        print(f"SKIP | talk_id={talk_id} | \"{title}\" by {teacher} | Failed {MAX_RETRIES} times this session")
-        return
 
     if not mp3_url:
         with Session() as session:
@@ -772,8 +765,7 @@ def _process_talk(talk, model, backend, client, prefetch_client, Session, worker
         next_mp3_url = next_talk.mp3_url
         next_mp3_path = Path(__file__).parent / f"{next_id}.mp3"
         next_already_done = (OUTPUT_DIR / f"{next_id}.txt").exists() and (OUTPUT_DIR / f"{next_id}.jsonl").exists()
-        next_skip = _error_counts.get(next_talk.talk_id, 0) >= MAX_RETRIES
-        if next_mp3_url and not next_mp3_path.exists() and not next_already_done and not next_skip:
+        if next_mp3_url and not next_mp3_path.exists() and not next_already_done:
             def _prefetch(c=prefetch_client, url=next_mp3_url, dest=next_mp3_path, tid=next_id):
                 try:
                     download_mp3(c, url, dest)
@@ -812,11 +804,11 @@ def _process_talk(talk, model, backend, client, prefetch_client, Session, worker
         print(f"DONE | talk_id={talk_id} | \"{title}\" by {teacher}")
 
     except Exception as e:
-        _error_counts[talk.talk_id] = _error_counts.get(talk.talk_id, 0) + 1
-        count = _error_counts[talk.talk_id]
-        print(f"ERROR | talk_id={talk_id} | \"{title}\" by {teacher} | {type(e).__name__}: {e} (attempt {count}/{MAX_RETRIES})")
         with Session() as session:
-            mark_error(session, talk.talk_id)
+            count = mark_error(session, talk.talk_id, MAX_RETRIES)
+        print(f"ERROR | talk_id={talk_id} | \"{title}\" by {teacher} | {type(e).__name__}: {e} (attempt {count}/{MAX_RETRIES})")
+        if count >= MAX_RETRIES:
+            print(f"FAILED | talk_id={talk_id} | \"{title}\" by {teacher} | Gave up after {MAX_RETRIES} attempts")
         wid = worker_id or talk.claimed_by or "unknown"
         with Session() as session:
             worker_heartbeat(session, wid, status="idle")
